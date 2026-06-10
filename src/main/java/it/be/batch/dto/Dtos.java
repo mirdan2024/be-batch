@@ -18,7 +18,7 @@ public class Dtos {
 			String cronExpression, String timezone, Boolean enabled, String paramsJson, String bodyJson) {
 	}
 
-	public record BatchSubscriptionResponse(Long id, Long customerId, String customerName, Long batchDefinitionId,
+	public record BatchSubscriptionResponse(Long id, Long customerId, Long batchDefinitionId,
 			String batchCode, String cronExpression, String timezone, boolean enabled, LocalDateTime lastRunAt,
 			LocalDateTime nextRunAt, String paramsJson, String bodyJson) {
 	}

@@ -22,11 +22,8 @@ public class BatchSubscription {
 
 	@Column(name = "customer_id", nullable = false)
 	private Long customerId;
-
-	@Column(name = "customer_name")
-	private String customerName;
-
-	@ManyToOne(fetch = FetchType.LAZY)
+	
+	@ManyToOne(fetch = FetchType.EAGER)
 	@JoinColumn(name = "batch_definition_id", nullable = false)
 	private BatchDefinition batchDefinition;
 
@@ -66,14 +63,6 @@ public class BatchSubscription {
 
 	public void setCustomerId(Long customerId) {
 		this.customerId = customerId;
-	}
-
-	public String getCustomerName() {
-		return customerName;
-	}
-
-	public void setCustomerName(String customerName) {
-		this.customerName = customerName;
 	}
 
 	public BatchDefinition getBatchDefinition() {

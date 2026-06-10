@@ -58,7 +58,6 @@ public class BatchSubscriptionService {
 
         BatchSubscription entity = new BatchSubscription();
         entity.setCustomerId(request.customerId());
-        entity.setCustomerName(request.customerName());
         entity.setBatchDefinition(definition);
         entity.setCronExpression(request.cronExpression());
         entity.setTimezone(request.timezone() != null ? request.timezone() : "Europe/Rome");
@@ -81,7 +80,6 @@ public class BatchSubscriptionService {
                 .orElseThrow(() -> new RuntimeException("Batch definition non trovata"));
 
         entity.setCustomerId(request.customerId());
-        entity.setCustomerName(request.customerName());
         entity.setBatchDefinition(definition);
         entity.setCronExpression(request.cronExpression());
         entity.setTimezone(request.timezone() != null ? request.timezone() : "Europe/Rome");
@@ -135,7 +133,6 @@ public class BatchSubscriptionService {
         return new BatchSubscriptionResponse(
                 entity.getId(),
                 entity.getCustomerId(),
-                entity.getCustomerName(),
                 entity.getBatchDefinition().getId(),
                 entity.getBatchDefinition().getCode(),
                 entity.getCronExpression(),
