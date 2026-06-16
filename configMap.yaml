@@ -1,7 +1,11 @@
-apiVersion: v1
 kind: ConfigMap
-metadata:
-  name: bebatch-configmap
+apiVersion: v1
 data:
-  DATABASE_URL: "jdbc:mysql://80.211.73.239:3306/"
-  DATABASE_USER: "aegisxdb"
+  DATABASE_DRIVER: com.mysql.cj.jdbc.Driver
+  DATABASE_FORMAT_SQL: "false"
+  DATABASE_SHOW_SQL: "false"
+  DATABASE_URL: jdbc:mysql://80.211.73.239:3306/c_base
+  DATABASE_USER: aegisxdb
+metadata:
+  name: coll-backend-bebatch-configmap
+  namespace: default

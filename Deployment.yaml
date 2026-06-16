@@ -19,9 +19,9 @@ spec:
             - containerPort: 8080  # Porta esposta dal container
           envFrom:
             - configMapRef:
-                name: bebatch-configmap  # ConfigMap che contiene le variabili d'ambiente
+                name: coll-backend-bebatch-configmap  # ConfigMap che contiene le variabili d'ambiente
             - secretRef:
-                name: bebatch-secret      # Secret che contiene variabili d'ambiente sensibili
+                name: jwt-secret      # Secret che contiene variabili d'ambiente sensibili
           volumeMounts:
             - name: my-config-volume
               mountPath: /config
