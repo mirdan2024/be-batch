@@ -13,7 +13,7 @@ public interface BatchSubscriptionRepository extends JpaRepository<BatchSubscrip
 
 	List<BatchSubscription> findByEnabledTrueAndNextRunAtLessThanEqual(LocalDateTime now);
 
-	List<BatchSubscription> findByCustomerId(Long customerId);
+	List<BatchSubscription> findByIdIntermediario(Long idIntermediario);
 
 	@Query("""
 			    select s

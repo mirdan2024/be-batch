@@ -2,7 +2,6 @@ package it.be.batch.entity;
 
 import java.time.LocalDateTime;
 
-import it.be.batch.entity.BatchDefinition.BatchExecutionStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -27,9 +26,8 @@ public class BatchExecution {
 	@JoinColumn(name = "batch_subscription_id", nullable = false)
 	private BatchSubscription batchSubscription;
 
-	@Enumerated(EnumType.STRING)
 	@Column(nullable = false)
-	private BatchExecutionStatus status;
+	private String status;
 
 	@Column(name = "started_at", nullable = false)
 	private LocalDateTime startedAt;
@@ -65,11 +63,12 @@ public class BatchExecution {
 		this.id = id;
 	}
 
-	public BatchExecutionStatus getStatus() {
+
+	public String getStatus() {
 		return status;
 	}
 
-	public void setStatus(BatchExecutionStatus status) {
+	public void setStatus(String status) {
 		this.status = status;
 	}
 

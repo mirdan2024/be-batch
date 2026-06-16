@@ -16,8 +16,8 @@ import org.springframework.web.client.RestTemplate;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import it.ai.client.constants.AppConstants;
 import it.be.batch.entity.BatchDefinition;
-import it.be.batch.entity.BatchDefinition.BatchExecutionStatus;
 import it.be.batch.entity.BatchExecution;
 import it.be.batch.entity.BatchSubscription;
 import it.be.batch.repo.BatchExecutionRepository;
@@ -42,24 +42,24 @@ public class BatchExecutor {
 	}
 
 	@Transactional
-	public void execute(BatchSubscription subscription) {
+	public void execute(BatchSubscription subscription,String jwt) {
 
 		BatchExecution execution = new BatchExecution();
 		execution.setBatchSubscription(subscription);
-		execution.setStatus(BatchExecutionStatus.RUNNING);
+		execution.setStatus(AppConstants.STATUS_SENT);
 		execution.setStartedAt(LocalDateTime.now());
 
 		executionRepository.save(execution);
 
 		try {
-			ResponseEntity<String> response = callRestBatch(subscription);
+			ResponseEntity<String> response = callRestBatch(execution,subscription,jwt);
 
-			execution.setStatus(BatchExecutionStatus.SUCCESS);
+			execution.setStatus(AppConstants.STATUS_PENDING);
 			execution.setResponseCode(response.getStatusCode().value());
 			execution.setResponseBody(response.getBody());
 
 		} catch (Exception ex) {
-			execution.setStatus(BatchExecutionStatus.FAILED);
+			execution.setStatus(AppConstants.STATUS_FAILED);
 			execution.setErrorMessage(ex.getMessage());
 
 		} finally {
@@ -75,7 +75,7 @@ public class BatchExecutor {
 		}
 	}
 
-	private ResponseEntity<String> callRestBatch(BatchSubscription subscription) {
+	private ResponseEntity<String> callRestBatch(BatchExecution execution,BatchSubscription subscription,String jwtToken) {
 
 		BatchDefinition definition = subscription.getBatchDefinition();
 
@@ -83,7 +83,9 @@ public class BatchExecutor {
 
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
-
+		headers.setBearerAuth(jwtToken);
+		headers.add("idExecution", execution.getId()+"");
+		
 		HttpEntity<String> request = new HttpEntity<>(subscription.getBodyJson(), headers);
 
 		return restTemplate.exchange(resolvedUrl, HttpMethod.valueOf(definition.getHttpMethod().name()), request,

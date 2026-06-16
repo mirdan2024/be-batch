@@ -1,5 +1,6 @@
 package it.be.batch.entity;
 
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
 
 import jakarta.persistence.Column;
@@ -20,9 +21,9 @@ public class BatchSubscription {
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	private Long id;
 
-	@Column(name = "customer_id", nullable = false)
-	private Long customerId;
-	
+	@Column(name = "id_intermediario", nullable = false)
+	private Long idIntermediario;
+
 	@ManyToOne(fetch = FetchType.EAGER)
 	@JoinColumn(name = "batch_definition_id", nullable = false)
 	private BatchDefinition batchDefinition;
@@ -46,7 +47,24 @@ public class BatchSubscription {
 	@Column(name = "body_json", columnDefinition = "TEXT")
 	private String bodyJson;
 
+	@Column(name = "id_utente_admin", nullable = false)
+	private Long idUtenteAdmin;
+
+	@Column(name = "data_creazione", nullable = false)
+	private LocalDateTime dataCreazione;
+
+	@Column(name = "data_cessazione", nullable = false)
+	private LocalDateTime dataCessazione;
+
 	public BatchSubscription() {
+	}
+
+	public Long getIdUtenteAdmin() {
+		return idUtenteAdmin;
+	}
+
+	public void setIdUtenteAdmin(Long idUtenteAdmin) {
+		this.idUtenteAdmin = idUtenteAdmin;
 	}
 
 	public Long getId() {
@@ -57,12 +75,12 @@ public class BatchSubscription {
 		this.id = id;
 	}
 
-	public Long getCustomerId() {
-		return customerId;
+	public Long getIdIntermediario() {
+		return idIntermediario;
 	}
 
-	public void setCustomerId(Long customerId) {
-		this.customerId = customerId;
+	public void setIdIntermediario(Long idIntermediario) {
+		this.idIntermediario = idIntermediario;
 	}
 
 	public BatchDefinition getBatchDefinition() {
@@ -128,4 +146,22 @@ public class BatchSubscription {
 	public void setBodyJson(String bodyJson) {
 		this.bodyJson = bodyJson;
 	}
+
+	public LocalDateTime getDataCreazione() {
+		return dataCreazione;
+	}
+
+	public void setDataCreazione(LocalDateTime dataCreazione) {
+		this.dataCreazione = dataCreazione;
+	}
+
+	public LocalDateTime getDataCessazione() {
+		return dataCessazione;
+	}
+
+	public void setDataCessazione(LocalDateTime dataCessazione) {
+		this.dataCessazione = dataCessazione;
+	}
+
+	
 }

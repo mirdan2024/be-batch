@@ -18,7 +18,7 @@ import it.be.batch.dto.Dtos.BatchSubscriptionResponse;
 import it.be.batch.service.BatchSubscriptionService;
 
 @RestController
-@RequestMapping("/api/batch-subscriptions")
+@RequestMapping("/batch-subscriptions")
 public class BatchSubscriptionController {
 
     private final BatchSubscriptionService service;

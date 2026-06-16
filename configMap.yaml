@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bebatch-configmap
+data:
+  DATABASE_URL: "jdbc:mysql://80.211.73.239:3306/"
+  DATABASE_USER: "aegisxdb"

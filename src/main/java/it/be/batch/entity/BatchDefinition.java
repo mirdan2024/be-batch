@@ -1,5 +1,9 @@
 package it.be.batch.entity;
 
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
+
+import it.ai.client.constants.AppConstants;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -11,6 +15,9 @@ import jakarta.persistence.Table;
 
 
 
+/**
+ * 
+ */
 @Entity
 @Table(name = "batch_definition")
 public class BatchDefinition {
@@ -26,6 +33,15 @@ public class BatchDefinition {
 
 	@Column(name = "endpoint_url", nullable = false)
 	private String endpointUrl;
+	
+	@Column(name = "body_json", nullable = false)
+	private String bodyJson;
+	
+	@Column(name = "data_creazione", nullable = false)
+	private LocalDateTime dataCreazione;
+	
+	@Column(name = "data_cessazione", nullable = false)
+	private LocalDateTime dataCessazione;
 
 	@Enumerated(EnumType.STRING)
 	@Column(name = "http_method", nullable = false)
@@ -35,6 +51,35 @@ public class BatchDefinition {
 	private boolean enabled = true;
 
 	public BatchDefinition() {
+	}
+
+
+	public LocalDateTime getDataCreazione() {
+		return dataCreazione;
+	}
+
+
+	public void setDataCreazione(LocalDateTime dataCreazione) {
+		this.dataCreazione = dataCreazione;
+	}
+
+
+	public LocalDateTime getDataCessazione() {
+		return dataCessazione;
+	}
+
+
+	public void setDataCessazione(LocalDateTime dataCessazione) {
+		this.dataCessazione = dataCessazione;
+	}
+
+
+	public String getBodyJson() {
+		return bodyJson;
+	}
+
+	public void setBodyJson(String bodyJson) {
+		this.bodyJson = bodyJson;
 	}
 
 	public Long getId() {
@@ -90,7 +135,4 @@ public class BatchDefinition {
 		GET, POST
 	}
 
-	public enum BatchExecutionStatus {
-		RUNNING, SUCCESS, FAILED
-	}
 }

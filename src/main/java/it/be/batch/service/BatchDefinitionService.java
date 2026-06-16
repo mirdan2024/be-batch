@@ -1,5 +1,6 @@
 package it.be.batch.service;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 import org.springframework.stereotype.Service;
@@ -17,8 +18,8 @@ public class BatchDefinitionService {
     
 //    
 
-    public List<BatchDefinitionResponse> findAll() {
-        return repository.findAll()
+    public List<BatchDefinitionResponse> findActiveDefinitions() {
+        return repository.findActiveDefinitions()
                 .stream()
                 .map(this::toResponse)
                 .toList();
@@ -72,7 +73,12 @@ public class BatchDefinitionService {
 
     @Transactional
     public void delete(Long id) {
-        repository.deleteById(id);
+    	BatchDefinition entity = repository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Batch definition non trovato"));
+    	
+    	entity.setEnabled(false);
+    	entity.setDataCessazione(LocalDateTime.now());
+    	repository.save(entity);
     }
 
     private BatchDefinitionResponse toResponse(BatchDefinition entity) {

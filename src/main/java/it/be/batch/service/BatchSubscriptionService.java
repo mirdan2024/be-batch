@@ -17,12 +17,10 @@ import it.be.batch.repo.BatchSubscriptionRepository;
 @Service
 public class BatchSubscriptionService {
 
-    private final BatchSubscriptionRepository subscriptionRepository;
-    private final BatchDefinitionRepository definitionRepository;
-    
-    
+	private final BatchSubscriptionRepository subscriptionRepository;
+	private final BatchDefinitionRepository definitionRepository;
 
-    public BatchSubscriptionService(BatchSubscriptionRepository subscriptionRepository,
+	public BatchSubscriptionService(BatchSubscriptionRepository subscriptionRepository,
 			BatchDefinitionRepository definitionRepository) {
 		super();
 		this.subscriptionRepository = subscriptionRepository;
@@ -30,118 +28,105 @@ public class BatchSubscriptionService {
 	}
 
 	public List<BatchSubscriptionResponse> findAll() {
-        return subscriptionRepository.findAll()
-                .stream()
-                .map(this::toResponse)
-                .toList();
-    }
+		return subscriptionRepository.findAll().stream().map(this::toResponse).toList();
+	}
 
-    public List<BatchSubscriptionResponse> findByCustomerId(Long customerId) {
-        return subscriptionRepository.findByCustomerId(customerId)
-                .stream()
-                .map(this::toResponse)
-                .toList();
-    }
+	public List<BatchSubscriptionResponse> findByCustomerId(Long customerId) {
+		return subscriptionRepository.findByIdIntermediario(customerId).stream().map(this::toResponse).toList();
+	}
 
-    public BatchSubscriptionResponse findById(Long id) {
-        BatchSubscription entity = subscriptionRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+	public BatchSubscriptionResponse findById(Long id) {
+		BatchSubscription entity = subscriptionRepository.findById(id)
+				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
 
-        return toResponse(entity);
-    }
+		return toResponse(entity);
+	}
 
-    @Transactional
-    public BatchSubscriptionResponse create(BatchSubscriptionRequest request) {
+	@Transactional
+	public BatchSubscriptionResponse create(BatchSubscriptionRequest request) {
 
-        BatchDefinition definition = definitionRepository.findById(request.batchDefinitionId())
-                .orElseThrow(() -> new RuntimeException("Batch definition non trovata"));
+		BatchDefinition definition = definitionRepository.findById(request.batchDefinitionId())
+				.orElseThrow(() -> new RuntimeException("Batch definition non trovata"));
 
-        BatchSubscription entity = new BatchSubscription();
-        entity.setCustomerId(request.customerId());
-        entity.setBatchDefinition(definition);
-        entity.setCronExpression(request.cronExpression());
-        entity.setTimezone(request.timezone() != null ? request.timezone() : "Europe/Rome");
-        entity.setEnabled(request.enabled() == null || request.enabled());
-        entity.setParamsJson(request.paramsJson());
-        entity.setBodyJson(request.bodyJson());
+		BatchSubscription entity = new BatchSubscription();
+		entity.setIdIntermediario(request.idIntermediario());
+		entity.setBatchDefinition(definition);
+		entity.setCronExpression(request.cronExpression());
+		entity.setTimezone(request.timezone() != null ? request.timezone() : "Europe/Rome");
+		entity.setEnabled(request.enabled() == null || request.enabled());
+		entity.setParamsJson(request.paramsJson());
+		entity.setBodyJson(request.bodyJson());
+		entity.setIdUtenteAdmin(request.idUtenteAdmin());
+		entity.setDataCreazione(LocalDateTime.now());
+		entity.setNextRunAt(calculateNextRun(entity));
 
-        entity.setNextRunAt(calculateNextRun(entity));
+		return toResponse(subscriptionRepository.save(entity));
+	}
 
-        return toResponse(subscriptionRepository.save(entity));
-    }
+	@Transactional
+	public BatchSubscriptionResponse update(Long id, BatchSubscriptionRequest request) {
 
-    @Transactional
-    public BatchSubscriptionResponse update(Long id, BatchSubscriptionRequest request) {
+		BatchSubscription entity = subscriptionRepository.findById(id)
+				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
 
-        BatchSubscription entity = subscriptionRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+		BatchDefinition definition = definitionRepository.findById(request.batchDefinitionId())
+				.orElseThrow(() -> new RuntimeException("Batch definition non trovata"));
 
-        BatchDefinition definition = definitionRepository.findById(request.batchDefinitionId())
-                .orElseThrow(() -> new RuntimeException("Batch definition non trovata"));
+		entity.setIdIntermediario(request.idIntermediario());
+		entity.setBatchDefinition(definition);
+		entity.setCronExpression(request.cronExpression());
+		entity.setTimezone(request.timezone() != null ? request.timezone() : "Europe/Rome");
 
-        entity.setCustomerId(request.customerId());
-        entity.setBatchDefinition(definition);
-        entity.setCronExpression(request.cronExpression());
-        entity.setTimezone(request.timezone() != null ? request.timezone() : "Europe/Rome");
+		if (request.enabled() != null) {
+			entity.setEnabled(request.enabled());
+		}
 
-        if (request.enabled() != null) {
-            entity.setEnabled(request.enabled());
-        }
+		entity.setParamsJson(request.paramsJson());
+		entity.setBodyJson(request.bodyJson());
 
-        entity.setParamsJson(request.paramsJson());
-        entity.setBodyJson(request.bodyJson());
+		entity.setNextRunAt(calculateNextRun(entity));
 
-        entity.setNextRunAt(calculateNextRun(entity));
+		return toResponse(subscriptionRepository.save(entity));
+	}
 
-        return toResponse(subscriptionRepository.save(entity));
-    }
+	@Transactional
+	public void enable(Long id) {
+		BatchSubscription entity = subscriptionRepository.findById(id)
+				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
 
-    @Transactional
-    public void enable(Long id) {
-        BatchSubscription entity = subscriptionRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+		entity.setEnabled(true);
+		entity.setDataCessazione(null);
+		if (entity.getNextRunAt() == null) {
+			entity.setNextRunAt(calculateNextRun(entity));
+		}
 
-        entity.setEnabled(true);
+		subscriptionRepository.save(entity);
+	}
 
-        if (entity.getNextRunAt() == null) {
-            entity.setNextRunAt(calculateNextRun(entity));
-        }
+	@Transactional
+	public void disable(Long id) {
+		BatchSubscription entity = subscriptionRepository.findById(id)
+				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
 
-        subscriptionRepository.save(entity);
-    }
+		entity.setEnabled(false);
+		entity.setDataCessazione(LocalDateTime.now());
+		subscriptionRepository.save(entity);
+	}
 
-    @Transactional
-    public void disable(Long id) {
-        BatchSubscription entity = subscriptionRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+	@Transactional
+	public void delete(Long id) {
+		disable(id);
+	}
 
-        entity.setEnabled(false);
-        subscriptionRepository.save(entity);
-    }
+	private LocalDateTime calculateNextRun(BatchSubscription subscription) {
+		CronExpression cron = CronExpression.parse(subscription.getCronExpression());
+		return cron.next(LocalDateTime.now());
+	}
 
-    @Transactional
-    public void delete(Long id) {
-        subscriptionRepository.deleteById(id);
-    }
-
-    private LocalDateTime calculateNextRun(BatchSubscription subscription) {
-        CronExpression cron = CronExpression.parse(subscription.getCronExpression());
-        return cron.next(LocalDateTime.now());
-    }
-
-    private BatchSubscriptionResponse toResponse(BatchSubscription entity) {
-        return new BatchSubscriptionResponse(
-                entity.getId(),
-                entity.getCustomerId(),
-                entity.getBatchDefinition().getId(),
-                entity.getBatchDefinition().getCode(),
-                entity.getCronExpression(),
-                entity.getTimezone(),
-                entity.isEnabled(),
-                entity.getLastRunAt(),
-                entity.getNextRunAt(),
-                entity.getParamsJson(),
-                entity.getBodyJson()
-        );
-    }
+	private BatchSubscriptionResponse toResponse(BatchSubscription entity) {
+		return new BatchSubscriptionResponse(entity.getId(), entity.getIdIntermediario(), entity.getBatchDefinition().getId(),
+				entity.getBatchDefinition().getCode(), entity.getCronExpression(), entity.getTimezone(),
+				entity.isEnabled(), entity.getLastRunAt(), entity.getNextRunAt(), entity.getParamsJson(),
+				entity.getBodyJson(), entity.getIdUtenteAdmin());
+	}
 }
