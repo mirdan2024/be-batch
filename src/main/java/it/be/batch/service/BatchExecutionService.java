@@ -20,10 +20,10 @@ public class BatchExecutionService {
 
 
 	@Transactional
-	public void update(BatchExecutionRequest request) {
+	public void update(Long id, BatchExecutionRequest request) {
 
-		BatchExecution entity = repository.findById(request.id())
-				.orElseThrow(() -> new RuntimeException("Batch definition non trovato"));
+		BatchExecution entity = repository.findById(id)
+				.orElseThrow(() -> new RuntimeException("Esecuzione batch non trovata: " + id));
 
 		entity.setResponseBody(request.response());
 		entity.setStatus(request.status());

@@ -2,9 +2,7 @@ package it.be.batch.controller;
 
 import java.util.List;
 
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -13,12 +11,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import it.be.batch.dto.Dtos.BatchExecutionResponse;
 import it.be.batch.dto.Dtos.BatchSubscriptionRequest;
 import it.be.batch.dto.Dtos.BatchSubscriptionResponse;
 import it.be.batch.service.BatchSubscriptionService;
 
 @RestController
-@RequestMapping("/batch-subscriptions")
+@RequestMapping({ "batch-subscriptions", "/api/batch-subscriptions" })
 public class BatchSubscriptionController {
 
     private final BatchSubscriptionService service;
@@ -46,6 +45,12 @@ public class BatchSubscriptionController {
         return service.findById(id);
     }
 
+    // Storico esecuzioni della sottoscrizione (ultime 50, decrescente per data di inizio).
+    @GetMapping("/{id}/executions")
+    public List<BatchExecutionResponse> executions(@PathVariable Long id) {
+        return service.findExecutions(id);
+    }
+
     @PostMapping
     public BatchSubscriptionResponse create(@RequestBody BatchSubscriptionRequest request) {
         return service.create(request);
@@ -59,17 +64,19 @@ public class BatchSubscriptionController {
         return service.update(id, request);
     }
 
-    @PatchMapping("/{id}/enable")
+    // NB: POST (non PATCH/DELETE). Il gateway di routing instrada solo GET/POST/PUT su /**: con PATCH/DELETE
+    // la preflight CORS viene bloccata dal browser ("Failed to fetch"). Convenzione del resto dell'app.
+    @PostMapping("/{id}/enable")
     public void enable(@PathVariable Long id) {
         service.enable(id);
     }
 
-    @PatchMapping("/{id}/disable")
+    @PostMapping("/{id}/disable")
     public void disable(@PathVariable Long id) {
         service.disable(id);
     }
 
-    @DeleteMapping("/{id}")
+    @PostMapping("/{id}/delete")
     public void delete(@PathVariable Long id) {
         service.delete(id);
     }

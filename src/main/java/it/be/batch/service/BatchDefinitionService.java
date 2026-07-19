@@ -50,6 +50,8 @@ public class BatchDefinitionService {
         entity.setEndpointUrl(request.endpointUrl());
         entity.setHttpMethod(request.httpMethod());
         entity.setEnabled(request.enabled() == null || request.enabled());
+        // data_creazione è NOT NULL: senza, l'insert fallirebbe. data_cessazione resta null (= attiva).
+        entity.setDataCreazione(LocalDateTime.now());
 
         return toResponse(repository.save(entity));
     }

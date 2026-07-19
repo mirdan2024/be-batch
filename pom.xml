@@ -9,11 +9,11 @@
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>3.4.0</version>
+		<version>4.1.0</version>
 		<relativePath />
 	</parent>
 	<properties>
-		<java.version>17</java.version>
+		<java.version>25</java.version>
 	</properties>
 
 	<dependencies>
@@ -24,10 +24,9 @@
 			<version>0.0.2-SNAPSHOT</version>
 		</dependency>
 
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-aop</artifactId>
-		</dependency>
+		<!-- spring-boot-starter-aop rimosso: non è usato (nessun @Aspect) e il BOM di Spring Boot 4.1 non
+		     ne gestisce più la versione. Il proxy per @Transactional arriva comunque via spring-aop
+		     transitivo da data-jpa/web. -->
 
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -60,16 +59,18 @@
 			<scope>test</scope>
 		</dependency>
 
+		<!-- Coordinate nuove (com.mysql, versione gestita dal parent Boot), come negli altri moduli:
+		     le vecchie mysql:mysql-connector-java sono ferme alla 8.0.33 e non ricevono aggiornamenti. -->
 		<dependency>
-			<groupId>mysql</groupId>
-			<artifactId>mysql-connector-java</artifactId>
-			<version>8.0.33</version>
+			<groupId>com.mysql</groupId>
+			<artifactId>mysql-connector-j</artifactId>
 		</dependency>
 
+		<!-- springdoc 3.x è la serie compatibile con Spring Boot 4 (la 2.x si ferma a Boot 3). -->
 		<dependency>
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-			<version>2.8.14</version>
+			<version>3.0.3</version>
 		</dependency>
 
 		<dependency>
@@ -77,16 +78,18 @@
 			<artifactId>spring-security-crypto</artifactId>
 		</dependency>
 
+		<!-- Allineate a commonBase/be-anag: versioni diverse dello stesso jar nel classpath
+		     causerebbero conflitti di risoluzione col JwtUtil condiviso. -->
 		<dependency>
 			<groupId>com.auth0</groupId>
 			<artifactId>java-jwt</artifactId>
-			<version>3.18.2</version>
+			<version>4.5.0</version>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.commons</groupId>
 			<artifactId>commons-csv</artifactId>
-			<version>1.10.0</version>
+			<version>1.12.0</version>
 		</dependency>
 
 		<dependency>

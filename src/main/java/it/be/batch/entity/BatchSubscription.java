@@ -31,6 +31,16 @@ public class BatchSubscription {
 	@Column(name = "cron_expression", nullable = false)
 	private String cronExpression;
 
+	// Credenziali con cui il batch si autentica ed esegue il servizio: configurate per singola
+	// schedulazione, così parte in autonomia senza dipendere da un'utenza globale.
+	@Column(name = "username", nullable = false)
+	private String username;
+
+	// Password CIFRATA a riposo (TextEncryptor): mai in chiaro nel DB. Il batch la decifra solo al
+	// momento del login. La API non la restituisce mai in lettura.
+	@Column(name = "password_enc", nullable = false, columnDefinition = "TEXT")
+	private String passwordEnc;
+
 	private String timezone = "Europe/Rome";
 
 	private boolean enabled = true;
@@ -40,6 +50,11 @@ public class BatchSubscription {
 
 	@Column(name = "next_run_at")
 	private LocalDateTime nextRunAt;
+
+	// Data/ora di decorrenza (opzionale): la schedulazione non parte prima. next_run_at viene calcolato
+	// come prima occorrenza del cron >= start_at, e comunque mai nel passato. NULL = nessun vincolo.
+	@Column(name = "start_at")
+	private LocalDateTime startAt;
 
 	@Column(name = "params_json", columnDefinition = "TEXT")
 	private String paramsJson;
@@ -53,7 +68,8 @@ public class BatchSubscription {
 	@Column(name = "data_creazione", nullable = false)
 	private LocalDateTime dataCreazione;
 
-	@Column(name = "data_cessazione", nullable = false)
+	// null = sottoscrizione attiva; valorizzata = disattivata (disable() la imposta, enable() la azzera).
+	@Column(name = "data_cessazione")
 	private LocalDateTime dataCessazione;
 
 	public BatchSubscription() {
@@ -99,6 +115,22 @@ public class BatchSubscription {
 		this.cronExpression = cronExpression;
 	}
 
+	public String getUsername() {
+		return username;
+	}
+
+	public void setUsername(String username) {
+		this.username = username;
+	}
+
+	public String getPasswordEnc() {
+		return passwordEnc;
+	}
+
+	public void setPasswordEnc(String passwordEnc) {
+		this.passwordEnc = passwordEnc;
+	}
+
 	public String getTimezone() {
 		return timezone;
 	}
@@ -129,6 +161,14 @@ public class BatchSubscription {
 
 	public void setNextRunAt(LocalDateTime nextRunAt) {
 		this.nextRunAt = nextRunAt;
+	}
+
+	public LocalDateTime getStartAt() {
+		return startAt;
+	}
+
+	public void setStartAt(LocalDateTime startAt) {
+		this.startAt = startAt;
 	}
 
 	public String getParamsJson() {

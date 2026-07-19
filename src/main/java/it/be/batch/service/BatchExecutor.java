@@ -8,9 +8,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestTemplate;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -31,51 +30,76 @@ public class BatchExecutor {
 
 	private final BatchExecutionRepository executionRepository;
 	private final BatchSubscriptionRepository subscriptionRepository;
+	// La chiamata HTTP NON deve stare dentro una transazione: con timeout fino a 10 minuti terrebbe
+	// occupata una connessione Hikari (pool da 15) per tutta la durata, esaurendolo con poche
+	// esecuzioni lente. Si aprono quindi due transazioni brevi (registrazione iniziale e salvataggio
+	// esito) attorno all'HTTP, non una che lo avvolge. TransactionTemplate e non @Transactional perché
+	// i metodi verrebbero invocati dall'interno della classe, bypassando il proxy transazionale di Spring.
+	private final TransactionTemplate transactionTemplate;
 
 	public BatchExecutor(RestTemplate restTemplate, ObjectMapper objectMapper,
-			BatchExecutionRepository executionRepository, BatchSubscriptionRepository subscriptionRepository) {
+			BatchExecutionRepository executionRepository, BatchSubscriptionRepository subscriptionRepository,
+			TransactionTemplate transactionTemplate) {
 		super();
 		this.restTemplate = restTemplate;
 		this.objectMapper = objectMapper;
 		this.executionRepository = executionRepository;
 		this.subscriptionRepository = subscriptionRepository;
+		this.transactionTemplate = transactionTemplate;
 	}
 
-	@Transactional
-	public void execute(BatchSubscription subscription,String jwt) {
+	public void execute(BatchSubscription subscription, String jwt) {
 
-		BatchExecution execution = new BatchExecution();
-		execution.setBatchSubscription(subscription);
-		execution.setStatus(AppConstants.STATUS_SENT);
-		execution.setStartedAt(LocalDateTime.now());
+		// 1) Transazione breve: registra l'esecuzione come "in corso" (PENDING). Diventerà COMPLETED o
+		// FAILED al termine della chiamata (passo 3). Se l'app viene riavviata mentre è ancora PENDING,
+		// il recupero all'avvio (BatchStartupRecovery) la marca FAILED: una PENDING non conclusa è orfana.
+		BatchExecution execution = transactionTemplate.execute(status -> {
+			BatchExecution e = new BatchExecution();
+			e.setBatchSubscription(subscription);
+			e.setStatus(AppConstants.STATUS_PENDING);
+			e.setStartedAt(LocalDateTime.now());
+			return executionRepository.save(e);
+		});
 
-		executionRepository.save(execution);
-
+		// 2) FUORI transazione: chiamata all'endpoint del batch.
+		String status;
+		Integer responseCode = null;
+		String responseBody = null;
+		String errorMessage = null;
 		try {
-			ResponseEntity<String> response = callRestBatch(execution,subscription,jwt);
-
-			execution.setStatus(AppConstants.STATUS_PENDING);
-			execution.setResponseCode(response.getStatusCode().value());
-			execution.setResponseBody(response.getBody());
-
+			ResponseEntity<String> response = callRestBatch(execution, subscription, jwt);
+			// Il RestTemplate lancia eccezione sui 4xx/5xx (finiscono nel catch), quindi qui la risposta è
+			// sempre 2xx: l'esecuzione è conclusa con successo -> COMPLETED (non PENDING, che era un bug).
+			status = AppConstants.STATUS_COMPLETED;
+			responseCode = response.getStatusCode().value();
+			responseBody = response.getBody();
 		} catch (Exception ex) {
-			execution.setStatus(AppConstants.STATUS_FAILED);
-			execution.setErrorMessage(ex.getMessage());
+			status = AppConstants.STATUS_FAILED;
+			errorMessage = ex.getMessage();
+		}
 
-		} finally {
+		// 3) Transazione breve: salva l'esito e riprogramma la sottoscrizione (atomici insieme).
+		final String fStatus = status;
+		final Integer fResponseCode = responseCode;
+		final String fResponseBody = responseBody;
+		final String fErrorMessage = errorMessage;
+		transactionTemplate.executeWithoutResult(txStatus -> {
 			LocalDateTime now = LocalDateTime.now();
-
+			execution.setStatus(fStatus);
+			execution.setResponseCode(fResponseCode);
+			execution.setResponseBody(fResponseBody);
+			execution.setErrorMessage(fErrorMessage);
 			execution.setEndedAt(now);
+			executionRepository.save(execution);
 
 			subscription.setLastRunAt(now);
 			subscription.setNextRunAt(calculateNextRun(subscription));
-
-			executionRepository.save(execution);
 			subscriptionRepository.save(subscription);
-		}
+		});
 	}
 
-	private ResponseEntity<String> callRestBatch(BatchExecution execution,BatchSubscription subscription,String jwtToken) {
+	private ResponseEntity<String> callRestBatch(BatchExecution execution, BatchSubscription subscription,
+			String jwtToken) {
 
 		BatchDefinition definition = subscription.getBatchDefinition();
 
@@ -84,8 +108,8 @@ public class BatchExecutor {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
 		headers.setBearerAuth(jwtToken);
-		headers.add("idExecution", execution.getId()+"");
-		
+		headers.add("idExecution", execution.getId() + "");
+
 		HttpEntity<String> request = new HttpEntity<>(subscription.getBodyJson(), headers);
 
 		return restTemplate.exchange(resolvedUrl, HttpMethod.valueOf(definition.getHttpMethod().name()), request,
@@ -115,10 +139,9 @@ public class BatchExecutor {
 		}
 	}
 
+	// Cron non ha occorrenze future (nextRun null): si mantiene il valore precedente.
 	private LocalDateTime calculateNextRun(BatchSubscription subscription) {
-
-		CronExpression cron = CronExpression.parse(subscription.getCronExpression());
-
-		return cron.next(LocalDateTime.now());
+		LocalDateTime next = CronScheduleUtil.nextRun(subscription.getCronExpression(), subscription.getTimezone());
+		return (next != null) ? next : subscription.getNextRunAt();
 	}
 }

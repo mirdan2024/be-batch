@@ -1,5 +1,6 @@
 package it.be.batch.service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -7,11 +8,14 @@ import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import it.be.batch.dto.Dtos.BatchExecutionResponse;
 import it.be.batch.dto.Dtos.BatchSubscriptionRequest;
 import it.be.batch.dto.Dtos.BatchSubscriptionResponse;
 import it.be.batch.entity.BatchDefinition;
+import it.be.batch.entity.BatchExecution;
 import it.be.batch.entity.BatchSubscription;
 import it.be.batch.repo.BatchDefinitionRepository;
+import it.be.batch.repo.BatchExecutionRepository;
 import it.be.batch.repo.BatchSubscriptionRepository;
 
 @Service
@@ -19,12 +23,17 @@ public class BatchSubscriptionService {
 
 	private final BatchSubscriptionRepository subscriptionRepository;
 	private final BatchDefinitionRepository definitionRepository;
+	private final BatchExecutionRepository executionRepository;
+	private final CredentialCipher credentialCipher;
 
 	public BatchSubscriptionService(BatchSubscriptionRepository subscriptionRepository,
-			BatchDefinitionRepository definitionRepository) {
+			BatchDefinitionRepository definitionRepository, BatchExecutionRepository executionRepository,
+			CredentialCipher credentialCipher) {
 		super();
 		this.subscriptionRepository = subscriptionRepository;
 		this.definitionRepository = definitionRepository;
+		this.executionRepository = executionRepository;
+		this.credentialCipher = credentialCipher;
 	}
 
 	public List<BatchSubscriptionResponse> findAll() {
@@ -48,16 +57,25 @@ public class BatchSubscriptionService {
 		BatchDefinition definition = definitionRepository.findById(request.batchDefinitionId())
 				.orElseThrow(() -> new RuntimeException("Batch definition non trovata"));
 
+		if (request.username() == null || request.username().isBlank()
+				|| request.password() == null || request.password().isBlank()) {
+			throw new RuntimeException("Username e password sono obbligatori per la sottoscrizione batch");
+		}
+
 		BatchSubscription entity = new BatchSubscription();
 		entity.setIdIntermediario(request.idIntermediario());
 		entity.setBatchDefinition(definition);
 		entity.setCronExpression(request.cronExpression());
+		entity.setUsername(request.username());
+		// La password è cifrata a riposo: il DB non la vede mai in chiaro.
+		entity.setPasswordEnc(credentialCipher.encrypt(request.password()));
 		entity.setTimezone(request.timezone() != null ? request.timezone() : "Europe/Rome");
 		entity.setEnabled(request.enabled() == null || request.enabled());
 		entity.setParamsJson(request.paramsJson());
 		entity.setBodyJson(request.bodyJson());
 		entity.setIdUtenteAdmin(request.idUtenteAdmin());
 		entity.setDataCreazione(LocalDateTime.now());
+		entity.setStartAt(parseStartAt(request.startAt()));
 		entity.setNextRunAt(calculateNextRun(entity));
 
 		return toResponse(subscriptionRepository.save(entity));
@@ -77,12 +95,22 @@ public class BatchSubscriptionService {
 		entity.setCronExpression(request.cronExpression());
 		entity.setTimezone(request.timezone() != null ? request.timezone() : "Europe/Rome");
 
+		if (request.username() != null && !request.username().isBlank()) {
+			entity.setUsername(request.username());
+		}
+		// Password vuota/null in update = invariata: così l'admin non deve reinserirla a ogni modifica
+		// (e la API non la restituisce mai, quindi il client non ce l'ha per rimandarla).
+		if (request.password() != null && !request.password().isBlank()) {
+			entity.setPasswordEnc(credentialCipher.encrypt(request.password()));
+		}
+
 		if (request.enabled() != null) {
 			entity.setEnabled(request.enabled());
 		}
 
 		entity.setParamsJson(request.paramsJson());
 		entity.setBodyJson(request.bodyJson());
+		entity.setStartAt(parseStartAt(request.startAt()));
 
 		entity.setNextRunAt(calculateNextRun(entity));
 
@@ -113,20 +141,55 @@ public class BatchSubscriptionService {
 		subscriptionRepository.save(entity);
 	}
 
+	// Eliminazione DEFINITIVA dal DB (non un soft-disable: per quello c'è disable()). Prima si cancella
+	// lo storico esecuzioni, altrimenti la foreign key batch_execution -> batch_subscription impedirebbe
+	// la rimozione.
 	@Transactional
 	public void delete(Long id) {
-		disable(id);
+		if (!subscriptionRepository.existsById(id)) {
+			throw new RuntimeException("Sottoscrizione batch non trovata: " + id);
+		}
+		executionRepository.deleteByBatchSubscriptionId(id);
+		subscriptionRepository.deleteById(id);
+	}
+
+	// Storico esecuzioni della sottoscrizione: ultime 50, ordine decrescente per data di inizio.
+	public List<BatchExecutionResponse> findExecutions(Long subscriptionId) {
+		return executionRepository.findTop50ByBatchSubscriptionIdOrderByStartedAtDesc(subscriptionId)
+				.stream().map(this::toExecutionResponse).toList();
+	}
+
+	private BatchExecutionResponse toExecutionResponse(BatchExecution e) {
+		Long durationMs = (e.getStartedAt() != null && e.getEndedAt() != null)
+				? Duration.between(e.getStartedAt(), e.getEndedAt()).toMillis()
+				: null;
+		return new BatchExecutionResponse(e.getId(), e.getStatus(), e.getStartedAt(), e.getEndedAt(), durationMs,
+				e.getResponseCode(), e.getErrorMessage(), e.getResponseBody());
 	}
 
 	private LocalDateTime calculateNextRun(BatchSubscription subscription) {
-		CronExpression cron = CronExpression.parse(subscription.getCronExpression());
-		return cron.next(LocalDateTime.now());
+		return CronScheduleUtil.nextRun(subscription.getCronExpression(), subscription.getTimezone(),
+				subscription.getStartAt());
 	}
 
+	// startAt dal client come ISO locale "yyyy-MM-ddTHH:mm" (input datetime-local, secondi opzionali).
+	// null/vuoto = nessuna decorrenza. Formato non valido -> errore esplicito.
+	private LocalDateTime parseStartAt(String startAt) {
+		if (startAt == null || startAt.isBlank()) {
+			return null;
+		}
+		try {
+			return LocalDateTime.parse(startAt);
+		} catch (Exception e) {
+			throw new RuntimeException("Data e ora di partenza non valide: " + startAt);
+		}
+	}
+
+	// NB: username incluso, password MAI (non c'è nel response record).
 	private BatchSubscriptionResponse toResponse(BatchSubscription entity) {
 		return new BatchSubscriptionResponse(entity.getId(), entity.getIdIntermediario(), entity.getBatchDefinition().getId(),
-				entity.getBatchDefinition().getCode(), entity.getCronExpression(), entity.getTimezone(),
-				entity.isEnabled(), entity.getLastRunAt(), entity.getNextRunAt(), entity.getParamsJson(),
-				entity.getBodyJson(), entity.getIdUtenteAdmin());
+				entity.getBatchDefinition().getCode(), entity.getCronExpression(), entity.getUsername(),
+				entity.getTimezone(), entity.isEnabled(), entity.getLastRunAt(), entity.getNextRunAt(),
+				entity.getParamsJson(), entity.getBodyJson(), entity.getIdUtenteAdmin(), entity.getStartAt());
 	}
 }
