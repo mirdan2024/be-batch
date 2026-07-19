@@ -14,9 +14,11 @@ import it.be.batch.dto.Dtos.BatchSubscriptionResponse;
 import it.be.batch.entity.BatchDefinition;
 import it.be.batch.entity.BatchExecution;
 import it.be.batch.entity.BatchSubscription;
+import it.be.batch.entity.IntermediarioRef;
 import it.be.batch.repo.BatchDefinitionRepository;
 import it.be.batch.repo.BatchExecutionRepository;
 import it.be.batch.repo.BatchSubscriptionRepository;
+import it.be.batch.repo.IntermediarioRefRepository;
 
 @Service
 public class BatchSubscriptionService {
@@ -25,15 +27,17 @@ public class BatchSubscriptionService {
 	private final BatchDefinitionRepository definitionRepository;
 	private final BatchExecutionRepository executionRepository;
 	private final CredentialCipher credentialCipher;
+	private final IntermediarioRefRepository intermediarioRefRepository;
 
 	public BatchSubscriptionService(BatchSubscriptionRepository subscriptionRepository,
 			BatchDefinitionRepository definitionRepository, BatchExecutionRepository executionRepository,
-			CredentialCipher credentialCipher) {
+			CredentialCipher credentialCipher, IntermediarioRefRepository intermediarioRefRepository) {
 		super();
 		this.subscriptionRepository = subscriptionRepository;
 		this.definitionRepository = definitionRepository;
 		this.executionRepository = executionRepository;
 		this.credentialCipher = credentialCipher;
+		this.intermediarioRefRepository = intermediarioRefRepository;
 	}
 
 	public List<BatchSubscriptionResponse> findAll() {
@@ -185,11 +189,21 @@ public class BatchSubscriptionService {
 		}
 	}
 
+	// idIntermediario -> nominativo (null se assente/non trovato). N.B.: lookup per riga; il numero di
+	// schedulazioni è contenuto, quindi va bene senza ottimizzazioni.
+	private String nomeIntermediario(Long idIntermediario) {
+		if (idIntermediario == null) {
+			return null;
+		}
+		return intermediarioRefRepository.findById(idIntermediario).map(IntermediarioRef::getNominativo).orElse(null);
+	}
+
 	// NB: username incluso, password MAI (non c'è nel response record).
 	private BatchSubscriptionResponse toResponse(BatchSubscription entity) {
 		return new BatchSubscriptionResponse(entity.getId(), entity.getIdIntermediario(), entity.getBatchDefinition().getId(),
 				entity.getBatchDefinition().getCode(), entity.getCronExpression(), entity.getUsername(),
 				entity.getTimezone(), entity.isEnabled(), entity.getLastRunAt(), entity.getNextRunAt(),
-				entity.getParamsJson(), entity.getBodyJson(), entity.getIdUtenteAdmin(), entity.getStartAt());
+				entity.getParamsJson(), entity.getBodyJson(), entity.getIdUtenteAdmin(), entity.getStartAt(),
+				nomeIntermediario(entity.getIdIntermediario()));
 	}
 }

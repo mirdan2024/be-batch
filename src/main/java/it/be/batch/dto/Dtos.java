@@ -24,10 +24,11 @@ public class Dtos {
 	}
 
 	// NB: nessun campo password. La password non viene mai restituita in lettura.
+	// intermediarioNome = nominativo risolto da idIntermediario (per la UI: autocomplete/dettaglio/lista).
 	public record BatchSubscriptionResponse(Long id, Long idIntermediario, Long batchDefinitionId,
 			String batchCode, String cronExpression, String username, String timezone, boolean enabled,
 			LocalDateTime lastRunAt, LocalDateTime nextRunAt, String paramsJson, String bodyJson, Long idUtenteAdmin,
-			LocalDateTime startAt) {
+			LocalDateTime startAt, String intermediarioNome) {
 	}
 	
 
