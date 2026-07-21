@@ -21,12 +21,13 @@ import it.be.batch.service.BatchSubscriptionService;
 public class BatchSubscriptionController {
 
     private final BatchSubscriptionService service;
-    
-    
+    private final it.be.batch.service.BatchScheduler batchScheduler;
 
-    public BatchSubscriptionController(BatchSubscriptionService service) {
+    public BatchSubscriptionController(BatchSubscriptionService service,
+            it.be.batch.service.BatchScheduler batchScheduler) {
 		super();
 		this.service = service;
+		this.batchScheduler = batchScheduler;
 	}
 
 	@GetMapping
@@ -62,6 +63,13 @@ public class BatchSubscriptionController {
             @RequestBody BatchSubscriptionRequest request
     ) {
         return service.update(id, request);
+    }
+
+    // Esecuzione UNA TANTUM: parte subito, anche fuori orario (asincrona: esito nello storico).
+    // Risponde {"stato": "AVVIATA" | "NON_TROVATA" | "DEFINIZIONE_DISATTIVATA"}.
+    @PostMapping("/{id}/esegui")
+    public java.util.Map<String, String> eseguiOra(@PathVariable Long id) {
+        return java.util.Map.of("stato", batchScheduler.eseguiUnaTantum(id));
     }
 
     // NB: POST (non PATCH/DELETE). Il gateway di routing instrada solo GET/POST/PUT su /**: con PATCH/DELETE

@@ -140,8 +140,12 @@ public class BatchExecutor {
 	}
 
 	// Cron non ha occorrenze future (nextRun null): si mantiene il valore precedente.
+	// NB: si passa anche startAt — un'esecuzione UNA TANTUM lanciata prima della decorrenza non deve
+	// rischedulare next_run_at prima di start_at (per i run schedulati, già oltre la decorrenza, il
+	// comportamento è identico a prima).
 	private LocalDateTime calculateNextRun(BatchSubscription subscription) {
-		LocalDateTime next = CronScheduleUtil.nextRun(subscription.getCronExpression(), subscription.getTimezone());
+		LocalDateTime next = CronScheduleUtil.nextRun(subscription.getCronExpression(), subscription.getTimezone(),
+				subscription.getStartAt());
 		return (next != null) ? next : subscription.getNextRunAt();
 	}
 }

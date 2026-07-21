@@ -73,6 +73,39 @@ public class BatchScheduler {
 		}
 	}
 
+	/**
+	 * Esecuzione UNA TANTUM richiesta manualmente dalla UI: parte SUBITO, anche fuori orario di
+	 * schedulazione e anche se la sottoscrizione è bloccata (il click è una volontà esplicita; il blocco
+	 * ferma solo lo scheduler). Richiede però la definizione attiva, come il dispatch.
+	 * ASINCRONA: la risposta HTTP torna subito con "AVVIATA"; login + chiamata girano in un thread a
+	 * parte e l'esito si legge nello storico esecuzioni (batch_execution), come per i run schedulati.
+	 * Ritorna: AVVIATA / NON_TROVATA / DEFINIZIONE_DISATTIVATA.
+	 */
+	public String eseguiUnaTantum(Long subscriptionId) {
+		BatchSubscription subscription = subscriptionRepository.findById(subscriptionId).orElse(null);
+		if (subscription == null) {
+			return "NON_TROVATA";
+		}
+		if (subscription.getBatchDefinition() == null || !subscription.getBatchDefinition().isEnabled()) {
+			return "DEFINIZIONE_DISATTIVATA";
+		}
+		java.util.concurrent.CompletableFuture.runAsync(() -> {
+			try {
+				String jwt = login(subscription);
+				if (jwt == null) {
+					logger.warn("Esecuzione una tantum: login fallito per subscription {} (token assente)",
+							subscription.getId());
+					return;
+				}
+				batchExecutor.execute(subscription, jwt);
+			} catch (Exception e) {
+				logger.error("Esecuzione una tantum fallita per subscription {}: {}", subscription.getId(),
+						e.getMessage());
+			}
+		});
+		return "AVVIATA";
+	}
+
 	// Autenticazione: login su be-base con le credenziali CONFIGURATE sulla sottoscrizione (username +
 	// password cifrata, decifrata qui solo al momento dell'uso). Restituisce il JWT, o null se il
 	// servizio non torna un token.
