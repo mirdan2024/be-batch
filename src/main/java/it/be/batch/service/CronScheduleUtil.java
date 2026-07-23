@@ -28,6 +28,11 @@ public final class CronScheduleUtil {
 	// Se startAt è futura si parte da lì (inclusa: -1ns per considerare un'occorrenza esattamente a
 	// startAt); se è null o passata si parte da adesso, così non si schedula mai nel passato.
 	public static LocalDateTime nextRun(String cronExpression, String timezone, LocalDateTime startAt) {
+		// Sottoscrizione "manuale" (nessun cron): nessuna esecuzione automatica -> next_run_at null, cosi'
+		// lo scheduler (findByEnabledTrueAndNextRunAtLessThanEqual) non la seleziona mai.
+		if (cronExpression == null || cronExpression.isBlank()) {
+			return null;
+		}
 		CronExpression cron = CronExpression.parse(cronExpression);
 		ZoneId zone = zoneOf(timezone);
 		ZonedDateTime now = ZonedDateTime.now(zone);

@@ -28,7 +28,9 @@ public class BatchSubscription {
 	@JoinColumn(name = "batch_definition_id", nullable = false)
 	private BatchDefinition batchDefinition;
 
-	@Column(name = "cron_expression", nullable = false)
+	// Nullable: una sottoscrizione "manuale" (manual-batch) non ha cron e viene eseguita solo su richiesta
+	// ("Esegui ora"). Lo scheduler la ignora perche' next_run_at resta null.
+	@Column(name = "cron_expression")
 	private String cronExpression;
 
 	// Credenziali con cui il batch si autentica ed esegue il servizio: configurate per singola

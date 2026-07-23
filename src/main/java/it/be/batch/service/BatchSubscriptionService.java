@@ -69,7 +69,7 @@ public class BatchSubscriptionService {
 		BatchSubscription entity = new BatchSubscription();
 		entity.setIdIntermediario(request.idIntermediario());
 		entity.setBatchDefinition(definition);
-		entity.setCronExpression(request.cronExpression());
+		entity.setCronExpression(blankToNull(request.cronExpression()));
 		entity.setUsername(request.username());
 		// La password è cifrata a riposo: il DB non la vede mai in chiaro.
 		entity.setPasswordEnc(credentialCipher.encrypt(request.password()));
@@ -96,7 +96,7 @@ public class BatchSubscriptionService {
 
 		entity.setIdIntermediario(request.idIntermediario());
 		entity.setBatchDefinition(definition);
-		entity.setCronExpression(request.cronExpression());
+		entity.setCronExpression(blankToNull(request.cronExpression()));
 		entity.setTimezone(request.timezone() != null ? request.timezone() : "Europe/Rome");
 
 		if (request.username() != null && !request.username().isBlank()) {
@@ -174,6 +174,11 @@ public class BatchSubscriptionService {
 	private LocalDateTime calculateNextRun(BatchSubscription subscription) {
 		return CronScheduleUtil.nextRun(subscription.getCronExpression(), subscription.getTimezone(),
 				subscription.getStartAt());
+	}
+
+	// Cron vuoto/blank -> null: sottoscrizione "manuale" (nessuna schedulazione automatica).
+	private String blankToNull(String s) {
+		return (s == null || s.isBlank()) ? null : s.trim();
 	}
 
 	// startAt dal client come ISO locale "yyyy-MM-ddTHH:mm" (input datetime-local, secondi opzionali).
