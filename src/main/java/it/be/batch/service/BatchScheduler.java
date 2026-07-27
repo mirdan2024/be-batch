@@ -25,7 +25,7 @@ import it.be.batch.repo.BatchSubscriptionRepository;
 public class BatchScheduler {
 	private static final Logger logger = LoggerFactory.getLogger(BatchScheduler.class);
 
-	@Value("${url.bebase.service}")
+	@Value("${url.bebase.login}")
 	private String urlBeBaseLoginService;
 
 	private final BatchSubscriptionRepository subscriptionRepository;
