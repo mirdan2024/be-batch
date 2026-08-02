@@ -45,7 +45,10 @@ public final class CronScheduleUtil {
 		return (next != null) ? next.toLocalDateTime() : null;
 	}
 
-	private static ZoneId zoneOf(String timezone) {
+	// Fuso della schedulazione, con ricaduta sul fuso del server se assente o non valido. Pubblico:
+	// serve anche ai trasferimenti SFTP, che risolvono i segnaposto di data (%YYYYMMDD%) nel fuso
+	// della schedulazione e non in quello del server.
+	public static ZoneId zoneOf(String timezone) {
 		if (timezone == null || timezone.isBlank()) {
 			return ZoneId.systemDefault();
 		}

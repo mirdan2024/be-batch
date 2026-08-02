@@ -25,6 +25,8 @@ import it.be.batch.repo.BatchSubscriptionRepository;
 @Service
 public class BatchExecutor {
 
+	private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(BatchExecutor.class);
+
 	private final RestTemplate restTemplate;
 	private final ObjectMapper objectMapper;
 
@@ -48,6 +50,14 @@ public class BatchExecutor {
 		this.transactionTemplate = transactionTemplate;
 	}
 
+	/** Taglia i testi lunghi per i log (il body completo va comunque su batch_execution.response_body). */
+	private static String abbrevia(String s, int max) {
+		if (s == null) {
+			return null;
+		}
+		return s.length() <= max ? s : s.substring(0, max) + "... (" + s.length() + " caratteri)";
+	}
+
 	public void execute(BatchSubscription subscription, String jwt) {
 
 		// 1) Transazione breve: registra l'esecuzione come "in corso" (PENDING). Diventerà COMPLETED o
@@ -66,16 +76,40 @@ public class BatchExecutor {
 		Integer responseCode = null;
 		String responseBody = null;
 		String errorMessage = null;
+		// 202 ACCEPTED = "preso in carico, ti aggiorno io": il servizio elabora in background, scrive
+		// l'avanzamento su /batch-executions/{id}/log e chiude l'esecuzione con /finish. In quel caso
+		// be-batch NON tocca lo stato (resta PENDING) e soprattutto non resta appeso ad aspettare:
+		// su elaborazioni lunghe il read timeout marcava FAILED un servizio che stava lavorando bene.
+		boolean presoInCarico = false;
 		try {
 			ResponseEntity<String> response = callRestBatch(execution, subscription, jwt);
+			if (response.getStatusCode().value() == 202) {
+				presoInCarico = true;
+				logger.info("Batch subscription {}: preso in carico dal servizio (202), esito atteso via callback",
+						subscription.getId());
+			}
 			// Il RestTemplate lancia eccezione sui 4xx/5xx (finiscono nel catch), quindi qui la risposta è
 			// sempre 2xx: l'esecuzione è conclusa con successo -> COMPLETED (non PENDING, che era un bug).
 			status = AppConstants.STATUS_COMPLETED;
 			responseCode = response.getStatusCode().value();
 			responseBody = response.getBody();
-		} catch (Exception ex) {
+		} catch (org.springframework.web.client.RestClientResponseException ex) {
+			// Il servizio ha risposto con un errore (4xx/5xx): il MOTIVO sta nel body, che spesso contiene
+			// il dettaglio per-file/per-record. Senza salvarlo, nello storico resterebbe solo "500 Internal
+			// Server Error" e non ci sarebbe modo di capire cosa correggere.
 			status = AppConstants.STATUS_FAILED;
-			errorMessage = ex.getMessage();
+			responseCode = ex.getStatusCode().value();
+			responseBody = ex.getResponseBodyAsString();
+			errorMessage = ex.getStatusCode().value() + " " + ex.getStatusText();
+			logger.error("Batch subscription {}: chiamata fallita con status {} - body: {}", subscription.getId(),
+					responseCode, abbrevia(responseBody, 2000));
+		} catch (Exception ex) {
+			// Errore senza risposta HTTP (timeout, host irraggiungibile, ecc.): si salva il tipo oltre al
+			// messaggio, perche' getMessage() da solo puo' essere null (es. NullPointerException).
+			status = AppConstants.STATUS_FAILED;
+			errorMessage = ex.getClass().getSimpleName()
+					+ (ex.getMessage() != null ? ": " + ex.getMessage() : "");
+			logger.error("Batch subscription {}: esecuzione fallita: {}", subscription.getId(), errorMessage, ex);
 		}
 
 		// 3) Transazione breve: salva l'esito e riprogramma la sottoscrizione (atomici insieme).
@@ -83,13 +117,20 @@ public class BatchExecutor {
 		final Integer fResponseCode = responseCode;
 		final String fResponseBody = responseBody;
 		final String fErrorMessage = errorMessage;
+		final boolean fPresoInCarico = presoInCarico;
 		transactionTemplate.executeWithoutResult(txStatus -> {
 			LocalDateTime now = LocalDateTime.now();
-			execution.setStatus(fStatus);
-			execution.setResponseCode(fResponseCode);
-			execution.setResponseBody(fResponseBody);
-			execution.setErrorMessage(fErrorMessage);
-			execution.setEndedAt(now);
+			// Con 202 l'esecuzione resta PENDING: la chiudera' il servizio. Si aggiorna solo la
+			// riprogrammazione della sottoscrizione, che non dipende dall'esito.
+			if (!fPresoInCarico) {
+				execution.setStatus(fStatus);
+				execution.setResponseCode(fResponseCode);
+				execution.setResponseBody(fResponseBody);
+				execution.setErrorMessage(fErrorMessage);
+				execution.setEndedAt(now);
+			} else {
+				execution.setResponseCode(202);
+			}
 			executionRepository.save(execution);
 
 			subscription.setLastRunAt(now);

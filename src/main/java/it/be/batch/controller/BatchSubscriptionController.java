@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.RestController;
 import it.be.batch.dto.Dtos.BatchExecutionResponse;
 import it.be.batch.dto.Dtos.BatchSubscriptionRequest;
 import it.be.batch.dto.Dtos.BatchSubscriptionResponse;
+import it.be.batch.dto.Dtos.TestCredentialsRequest;
+import it.be.batch.dto.Dtos.TestCredentialsResponse;
 import it.be.batch.service.BatchSubscriptionService;
 
 @RestController
@@ -52,6 +54,19 @@ public class BatchSubscriptionController {
         return service.findExecutions(id);
     }
 
+    // Verifica delle credenziali PRIMA del salvataggio: la UI abilita "Salva" solo se l'esito e' ok.
+    // Stesso login che fara' lo scheduler (be-base /doLoginBatch), cosi' l'errore emerge subito.
+    @PostMapping("/test-credentials")
+    public TestCredentialsResponse testCredentials(@RequestBody TestCredentialsRequest request) {
+        return service.testCredentials(request.username(), request.password());
+    }
+
+    // Verifica delle credenziali GIA' salvate su una schedulazione (diagnosi, senza reinserirle).
+    @PostMapping("/{id}/test-credentials")
+    public TestCredentialsResponse testStoredCredentials(@PathVariable Long id) {
+        return service.testStoredCredentials(id);
+    }
+
     @PostMapping
     public BatchSubscriptionResponse create(@RequestBody BatchSubscriptionRequest request) {
         return service.create(request);
@@ -74,6 +89,13 @@ public class BatchSubscriptionController {
 
     // NB: POST (non PATCH/DELETE). Il gateway di routing instrada solo GET/POST/PUT su /**: con PATCH/DELETE
     // la preflight CORS viene bloccata dal browser ("Failed to fetch"). Convenzione del resto dell'app.
+    // Interruzione dell'elaborazione in corso: chiude la riga di batch_execution e, se la definizione
+    // dichiara uno stop-url, invia lo stop al servizio chiamato (che si ferma in modo cooperativo).
+    @PostMapping("/{id}/stop")
+    public java.util.Map<String, Object> stop(@PathVariable Long id) {
+        return service.interrompi(id);
+    }
+
     @PostMapping("/{id}/enable")
     public void enable(@PathVariable Long id) {
         service.enable(id);

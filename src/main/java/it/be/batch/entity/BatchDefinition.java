@@ -40,6 +40,20 @@ public class BatchDefinition {
 	@Column(name = "body_json", columnDefinition = "TEXT")
 	private String bodyJson;
 
+	// URL di INTERRUZIONE del servizio chiamato (facoltativo). Un processo remoto non si puo' uccidere
+	// da fuori: se il servizio supporta la cancellazione cooperativa espone uno "stop" e lo dichiara qui;
+	// be-batch lo chiama quando l'operatore interrompe l'elaborazione. NULL = non interrompibile a valle.
+	@Column(name = "stop_url")
+	private String stopUrl;
+
+	public String getStopUrl() {
+		return stopUrl;
+	}
+
+	public void setStopUrl(String stopUrl) {
+		this.stopUrl = stopUrl;
+	}
+
 	@Column(name = "data_creazione", nullable = false)
 	private LocalDateTime dataCreazione;
 

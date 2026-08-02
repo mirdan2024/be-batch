@@ -7,7 +7,13 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Map;
+
+import org.springframework.web.bind.annotation.PostMapping;
+
 import it.be.batch.dto.Dtos.BatchExecutionRequest;
+import it.be.batch.dto.Dtos.BatchFinishRequest;
+import it.be.batch.dto.Dtos.BatchLogRequest;
 import it.be.batch.service.BatchExecutionService;
 
 @RestController
@@ -29,6 +35,27 @@ public class BatchExecutionController {
 		service.update(id, request);
 
 		return ResponseEntity.ok("ok");
+	}
+
+	/**
+	 * Aggiunge una riga di avanzamento alla telecronaca dell'esecuzione. La chiama il SERVIZIO che sta
+	 * elaborando (l'id lo riceve nell'header {@code idExecution}), cosi' l'operatore vede a che punto e'
+	 * senza dover aspettare la fine.
+	 */
+	@PostMapping("/{id}/log")
+	public ResponseEntity<Map<String, Object>> log(@PathVariable Long id, @RequestBody BatchLogRequest request) {
+		service.appendLog(id, request.message());
+		return ResponseEntity.ok(Map.of("success", true));
+	}
+
+	/**
+	 * Chiude l'esecuzione con lo stato definitivo (COMPLETED / FAILED / INTERROTTA): e' il servizio a
+	 * dichiarare l'esito, non piu' be-batch in base al timeout della chiamata HTTP.
+	 */
+	@PostMapping("/{id}/finish")
+	public ResponseEntity<Map<String, Object>> finish(@PathVariable Long id, @RequestBody BatchFinishRequest request) {
+		service.finish(id, request.status(), request.message(), request.responseBody());
+		return ResponseEntity.ok(Map.of("success", true));
 	}
 
 }

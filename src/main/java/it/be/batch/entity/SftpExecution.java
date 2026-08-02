@@ -4,8 +4,6 @@ import java.time.LocalDateTime;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -14,18 +12,25 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
+/**
+ * Esecuzione di una schedulazione SFTP, con la "telecronaca" file per file.
+ * <p>
+ * A differenza delle esecuzioni batch (dove il log lo scrive il servizio remoto via HTTP), qui il
+ * trasferimento gira dentro be-batch: il log lo scrive direttamente {@code SftpTransferService}.
+ */
 @Entity
-@Table(name = "batch_execution")
-public class BatchExecution {
+@Table(name = "sftp_execution")
+public class SftpExecution {
 
 	@Id
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	private Long id;
 
-	@ManyToOne(fetch = FetchType.LAZY)
-	@JoinColumn(name = "batch_subscription_id", nullable = false)
-	private BatchSubscription batchSubscription;
+	@ManyToOne(fetch = FetchType.EAGER, optional = false)
+	@JoinColumn(name = "sftp_schedule_id", nullable = false)
+	private SftpSchedule sftpSchedule;
 
+	/** PENDING | COMPLETED | FAILED | INTERROTTA */
 	@Column(nullable = false)
 	private String status;
 
@@ -35,46 +40,33 @@ public class BatchExecution {
 	@Column(name = "ended_at")
 	private LocalDateTime endedAt;
 
-	@Column(name = "response_code")
-	private Integer responseCode;
+	@Column(name = "file_trasferiti")
+	private Integer fileTrasferiti;
+
+	@Column(name = "byte_trasferiti")
+	private Long byteTrasferiti;
 
 	@Column(name = "error_message", columnDefinition = "TEXT")
 	private String errorMessage;
 
-	@Column(name = "response_body", columnDefinition = "LONGTEXT")
-	private String responseBody;
-
-	/** Telecronaca dell'elaborazione, scritta dal servizio chiamato riga per riga (vedi sql/11). */
 	@Column(name = "log", columnDefinition = "LONGTEXT")
 	private String log;
 
-	public String getLog() {
-		return log;
-	}
-
-	public void setLog(String log) {
-		this.log = log;
-	}
-
-	public BatchExecution() {
-	}
-
 	public Long getId() {
 		return id;
-	}
-
-	public BatchSubscription getBatchSubscription() {
-		return batchSubscription;
-	}
-
-	public void setBatchSubscription(BatchSubscription batchSubscription) {
-		this.batchSubscription = batchSubscription;
 	}
 
 	public void setId(Long id) {
 		this.id = id;
 	}
 
+	public SftpSchedule getSftpSchedule() {
+		return sftpSchedule;
+	}
+
+	public void setSftpSchedule(SftpSchedule sftpSchedule) {
+		this.sftpSchedule = sftpSchedule;
+	}
 
 	public String getStatus() {
 		return status;
@@ -100,12 +92,20 @@ public class BatchExecution {
 		this.endedAt = endedAt;
 	}
 
-	public Integer getResponseCode() {
-		return responseCode;
+	public Integer getFileTrasferiti() {
+		return fileTrasferiti;
 	}
 
-	public void setResponseCode(Integer responseCode) {
-		this.responseCode = responseCode;
+	public void setFileTrasferiti(Integer fileTrasferiti) {
+		this.fileTrasferiti = fileTrasferiti;
+	}
+
+	public Long getByteTrasferiti() {
+		return byteTrasferiti;
+	}
+
+	public void setByteTrasferiti(Long byteTrasferiti) {
+		this.byteTrasferiti = byteTrasferiti;
 	}
 
 	public String getErrorMessage() {
@@ -116,11 +116,11 @@ public class BatchExecution {
 		this.errorMessage = errorMessage;
 	}
 
-	public String getResponseBody() {
-		return responseBody;
+	public String getLog() {
+		return log;
 	}
 
-	public void setResponseBody(String responseBody) {
-		this.responseBody = responseBody;
+	public void setLog(String log) {
+		this.log = log;
 	}
 }

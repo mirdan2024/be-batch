@@ -103,6 +103,14 @@
 			<artifactId>mockito-junit-jupiter</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- Client SFTP per le "Schedulazioni SFTP". sshj ha un'API moderna e non richiede provider
+		     crittografici esterni per gli algoritmi correnti (JSch non e' piu' mantenuto).
+		     NB: e' una dipendenza NUOVA, non presente nel repository locale: la prima build deve avere rete. -->
+		<dependency>
+			<groupId>com.hierynomus</groupId>
+			<artifactId>sshj</artifactId>
+			<version>0.38.0</version>
+		</dependency>
 	</dependencies>
 
 	<build>
