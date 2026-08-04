@@ -29,8 +29,6 @@ import it.be.batch.entity.SftpExecution;
 import it.be.batch.entity.SftpSchedule;
 import it.be.batch.repo.SftpExecutionRepository;
 import it.be.batch.repo.SftpScheduleRepository;
-import it.be.storage.request.ReadFileRequest;
-import it.be.storage.response.ReadFileResponse;
 import it.common.base.batch.BatchJobControl;
 import it.common.base.batch.BatchJobRegistry;
 import net.schmizz.sshj.SSHClient;
@@ -104,6 +102,58 @@ public class SftpTransferService {
 	 */
 	@Value("${sftp.log.max-caratteri:200000}")
 	private int logMaxCaratteri;
+
+	/**
+	 * Estrazione automatica degli archivi ZIP prelevati da SFTP: su storage finiscono i file contenuti,
+	 * non l'archivio. Si puo' spegnere per trasferire gli zip cosi' come sono.
+	 */
+	@Value("${sftp.zip.estrai:true}")
+	private boolean estraiZip;
+
+	/**
+	 * Tetto per singolo file estratto: difesa contro gli archivi "zip bomb". Ora il limite riguarda lo
+	 * SPAZIO SU DISCO (l'estrazione e' in streaming, non in memoria), quindi puo' essere generoso.
+	 * 0 = nessun limite.
+	 */
+	@Value("${sftp.zip.max-file-mb:4096}")
+	private int zipMaxFileMb;
+
+	/**
+	 * Cartella di lavoro per i file in transito. Con archivi da GB serve spazio: puntarla a un volume
+	 * capiente invece che alla temp di sistema. Vuoto = temp di sistema.
+	 */
+	@Value("${sftp.temp.dir:}")
+	private String tempDirConfigurata;
+
+	/**
+	 * Tetto di durata di una singola richiesta HTTP verso be-storage. Un file da qualche GB su linea
+	 * lenta impiega molto: il timeout dei RestTemplate condivisi (minuti) lo taglierebbe a meta'.
+	 */
+	@Value("${sftp.http.timeout.min:120}")
+	private int httpTimeoutMin;
+
+	/**
+	 * Client HTTP dedicato ai TRASFERIMENTI DI FILE. Non si usa RestTemplate perche' con
+	 * {@code SimpleClientHttpRequestFactory} il corpo della richiesta viene bufferizzato in memoria:
+	 * su file da GB significa OutOfMemory. {@code HttpClient} del JDK con
+	 * {@code BodyPublishers.ofFile} / {@code BodyHandlers.ofFile} scrive e legge direttamente da disco.
+	 * Thread-safe, creato una volta sola.
+	 */
+	private volatile java.net.http.HttpClient httpFile;
+
+	private java.net.http.HttpClient httpFile() {
+		if (httpFile == null) {
+			synchronized (this) {
+				if (httpFile == null) {
+					httpFile = java.net.http.HttpClient.newBuilder()
+							.connectTimeout(java.time.Duration.ofMillis(connectTimeoutMs))
+							.followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+							.build();
+				}
+			}
+		}
+		return httpFile;
+	}
 
 	public SftpTransferService(SftpScheduleRepository scheduleRepository, SftpExecutionRepository executionRepository,
 			CredentialCipher credentialCipher, BatchJobRegistry batchJobRegistry,
@@ -239,7 +289,7 @@ public class SftpTransferService {
 		String filtroRisolto = patternDelGiorno(s);
 		Pattern filtro = compilaPattern(filtroRisolto);
 		logFiltro(idExecution, s, filtroRisolto);
-		Path tempDir = Files.createTempDirectory("sftp-down-");
+		Path tempDir = creaCartellaTemporanea("sftp-down-");
 
 		try (SSHClient ssh = connetti(s.getSftpHost(), s.getSftpPort(), s.getSftpUsername(),
 				credentialCipher.decrypt(s.getSftpPasswordEnc()));
@@ -277,20 +327,33 @@ public class SftpTransferService {
 				try {
 					// get(String, String): API stabile di sshj, scarica sul filesystem locale.
 					sftp.get(origine, locale.toString());
-					byte[] contenuto = Files.readAllBytes(locale);
-					if (contenuto.length == 0) {
-						// Non e' un errore (capita con i file segnaposto e con gli export a zero record),
-						// ma va detto: altrimenti a valle si cerca un contenuto che non c'e' mai stato.
-						log(idExecution, "         ATTENZIONE: il file di origine e' VUOTO (0 byte)");
+
+					if (estraiZip && isZip(nome)) {
+						// Lo ZIP e' solo un contenitore di trasporto: su storage vanno i file che contiene,
+						// non l'archivio. Lo zip scaricato resta nella cartella temporanea e viene buttato
+						// nel finally; sul server remoto vale la politica post-trasferimento configurata.
+						estraiZipSuStorage(s, locale, nome, idExecution, esito, progressivo, daPrendere.size(),
+								inizio);
+					} else {
+						// Il file resta su disco: si carica in streaming, senza leggerlo in memoria.
+						// Con un file da qualche GB un readAllBytes farebbe cadere il servizio (e byte[]
+						// non puo' comunque superare i 2 GB).
+						long dimensione = Files.size(locale);
+						if (dimensione == 0) {
+							// Non e' un errore (capita con i file segnaposto e con gli export a zero record),
+							// ma va detto: altrimenti a valle si cerca un contenuto che non c'e' mai stato.
+							log(idExecution, "         ATTENZIONE: il file di origine e' VUOTO (0 byte)");
+						}
+
+						caricaSuStorage(s, nome, locale);
+
+						esito.file++;
+						esito.byteTotali += dimensione;
+						log(idExecution, "[" + progressivo + "/" + daPrendere.size() + "] OK      " + nome + "   "
+								+ formatByte(dimensione) + " in "
+								+ formatDurata(System.currentTimeMillis() - inizio)
+								+ "   a " + cartellaStorage(s) + "/" + nome);
 					}
-
-					scriviSuStorage(s, nome, contenuto);
-
-					esito.file++;
-					esito.byteTotali += contenuto.length;
-					log(idExecution, "[" + progressivo + "/" + daPrendere.size() + "] OK      " + nome + "   "
-							+ formatByte(contenuto.length) + " in " + formatDurata(System.currentTimeMillis() - inizio)
-							+ "   a " + cartellaStorage(s) + "/" + nome);
 
 					archiviaRemoto(sftp, s, nome, idExecution, esito);
 				} catch (Exception e) {
@@ -304,6 +367,179 @@ public class SftpTransferService {
 		} finally {
 			pulisci(tempDir);
 		}
+	}
+
+	/**
+	 * Cartella di lavoro per i file in transito. Con archivi da GB la temp di sistema puo' non avere
+	 * spazio a sufficienza (nei container e' spesso piccola): {@code sftp.temp.dir} permette di
+	 * puntarla a un volume capiente. Lo spazio disponibile finisce nei log, cosi' un "No space left on
+	 * device" non arriva senza preavviso.
+	 */
+	private Path creaCartellaTemporanea(String prefisso) throws IOException {
+		Path base = null;
+		if (tempDirConfigurata != null && !tempDirConfigurata.isBlank()) {
+			base = Path.of(tempDirConfigurata.trim());
+			Files.createDirectories(base);
+		}
+		Path dir = (base == null) ? Files.createTempDirectory(prefisso) : Files.createTempDirectory(base, prefisso);
+		try {
+			long liberi = Files.getFileStore(dir).getUsableSpace();
+			logger.info("Cartella di transito {} — spazio disponibile {}", dir, formatByte(liberi));
+		} catch (Exception e) {
+			logger.debug("Spazio disponibile non determinabile per {}: {}", dir, e.getMessage());
+		}
+		return dir;
+	}
+
+	/** Vero se il nome file e' un archivio ZIP (il solo formato gestito). */
+	private static boolean isZip(String nome) {
+		return nome != null && nome.toLowerCase(java.util.Locale.ROOT).endsWith(".zip");
+	}
+
+	/**
+	 * Estrae un archivio ZIP scaricato e scrive su storage <b>i file contenuti</b>, uno per uno.
+	 * L'archivio NON viene copiato su storage: e' un contenitore di trasporto e finisce buttato con la
+	 * cartella temporanea.
+	 * <p>
+	 * Difese necessarie trattando archivi di provenienza esterna:
+	 * <ul>
+	 *   <li><b>zip-slip</b>: dell'entry si tiene solo il nome del file, mai il percorso interno. Un
+	 *       archivio confezionato con voci tipo {@code ../../etc/x} non puo' far scrivere fuori dalla
+	 *       cartella di destinazione;</li>
+	 *   <li><b>zip bomb</b>: si rifiuta ogni voce che superi {@code sftp.zip.max-file-mb} da
+	 *       decompressa, invece di riempire la memoria;</li>
+	 *   <li><b>stop</b>: il flag di interruzione si controlla anche fra una voce e l'altra, altrimenti
+	 *       un archivio con migliaia di file ignorerebbe la richiesta di fermarsi.</li>
+	 * </ul>
+	 * Le cartelle interne all'archivio vengono ignorate: i file finiscono tutti nella cartella di
+	 * storage configurata, che e' dove il servizio a valle li cerca.
+	 */
+	private void estraiZipSuStorage(SftpSchedule s, Path zipLocale, String nomeZip, Long idExecution, Esito esito,
+			int progressivo, int totale, long inizio) throws IOException {
+
+		String prefissoRiga = "[" + progressivo + "/" + totale + "] ";
+		BatchJobControl ctl = batchJobRegistry.get(jobName(s.getId()));
+		long limiteByte = (long) zipMaxFileMb * 1024L * 1024L;
+		int estratti = 0;
+		int saltati = 0;
+		long byteEstratti = 0;
+
+		try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(zipLocale.toFile())) {
+			java.util.Enumeration<? extends java.util.zip.ZipEntry> voci = zip.entries();
+			while (voci.hasMoreElements()) {
+				java.util.zip.ZipEntry voce = voci.nextElement();
+				if (ctl.isStopRequested()) {
+					log(idExecution, "         STOP richiesto durante l'estrazione: " + estratti + " file estratti");
+					break;
+				}
+				if (voce.isDirectory()) {
+					continue;
+				}
+				String nomeInterno = soloNomeFile(voce.getName());
+				if (nomeInterno.isEmpty()) {
+					saltati++;
+					log(idExecution, "         SALTATA voce con nome non valido: " + voce.getName());
+					continue;
+				}
+				// getSize() = -1 quando l'archivio non dichiara la dimensione: in quel caso il controllo
+				// si fa comunque sui byte effettivamente letti.
+				if (voce.getSize() > limiteByte) {
+					saltati++;
+					esito.avviso(nomeZip + "/" + nomeInterno + ": voce oltre " + zipMaxFileMb + " MB, saltata");
+					log(idExecution, "         SALTATA " + nomeInterno + ": dichiarata "
+							+ formatByte(voce.getSize()) + ", oltre il limite di " + zipMaxFileMb + " MB");
+					continue;
+				}
+
+				// La voce viene scritta su disco e poi caricata in streaming: mai in memoria, cosi'
+				// l'estrazione regge archivi da GB con dentro file altrettanto grandi.
+				Path vocePath = zipLocale.getParent().resolve(nomeTemporaneo("zip_" + estratti + "_" + nomeInterno));
+				long dimensione;
+				try {
+					try (java.io.InputStream in = zip.getInputStream(voce)) {
+						dimensione = copiaConTetto(in, vocePath, limiteByte);
+					}
+					if (dimensione < 0) {
+						saltati++;
+						esito.avviso(nomeZip + "/" + nomeInterno + ": oltre " + zipMaxFileMb
+								+ " MB una volta decompressa");
+						log(idExecution, "         SALTATA " + nomeInterno + ": supera " + zipMaxFileMb
+								+ " MB una volta decompressa");
+						continue;
+					}
+
+					caricaSuStorage(s, nomeInterno, vocePath);
+				} finally {
+					// La copia estratta serve solo al caricamento: si libera subito lo spazio, altrimenti
+					// un archivio da GB ne occuperebbe il doppio fino a fine elaborazione.
+					Files.deleteIfExists(vocePath);
+				}
+				estratti++;
+				byteEstratti += dimensione;
+				esito.file++;
+				esito.byteTotali += dimensione;
+				log(idExecution, "         estratto " + nomeInterno + "   " + formatByte(dimensione)
+						+ "   a " + cartellaStorage(s) + "/" + nomeInterno);
+			}
+		}
+
+		if (estratti == 0 && saltati == 0) {
+			esito.avviso(nomeZip + ": archivio senza file utili");
+			log(idExecution, prefissoRiga + "ATTENZIONE " + nomeZip + "   archivio VUOTO: nessun file estratto");
+		} else {
+			log(idExecution, prefissoRiga + "OK      " + nomeZip + "   " + estratti + " file estratti ("
+					+ formatByte(byteEstratti) + ")" + (saltati > 0 ? ", " + saltati + " saltati" : "")
+					+ " in " + formatDurata(System.currentTimeMillis() - inizio)
+					+ "   a " + cartellaStorage(s));
+		}
+		log(idExecution, "         l'archivio " + nomeZip + " NON viene copiato su storage (scartato)");
+	}
+
+	/**
+	 * Copia lo stream su file fermandosi se supera il tetto. Ritorna i byte copiati, oppure {@code -1}
+	 * se il limite e' stato superato (in quel caso il file parziale viene cancellato).
+	 * <p>
+	 * Si conta sui byte EFFETTIVAMENTE letti e non sulla dimensione dichiarata nell'archivio: un file
+	 * confezionato ad arte puo' dichiarare 1 KB e decomprimersi in gigabyte. La copia va su disco e
+	 * mai in memoria, altrimenti una singola voce grande basterebbe a far cadere il servizio.
+	 *
+	 * @param limiteByte tetto in byte; {@code <= 0} disattiva il controllo
+	 */
+	private static long copiaConTetto(java.io.InputStream in, Path destinazione, long limiteByte) throws IOException {
+		byte[] buf = new byte[64 * 1024];
+		long totale = 0;
+		try (java.io.OutputStream out = Files.newOutputStream(destinazione)) {
+			int letti;
+			while ((letti = in.read(buf)) > 0) {
+				totale += letti;
+				if (limiteByte > 0 && totale > limiteByte) {
+					out.close();
+					Files.deleteIfExists(destinazione);
+					return -1;
+				}
+				out.write(buf, 0, letti);
+			}
+		}
+		return totale;
+	}
+
+	/**
+	 * Ultimo segmento del percorso interno all'archivio, senza cartelle: e' la difesa contro lo
+	 * zip-slip. Si accettano sia {@code /} sia {@code \} come separatori, perche' gli zip creati su
+	 * Windows usano il secondo.
+	 */
+	private static String soloNomeFile(String percorsoInterno) {
+		if (percorsoInterno == null) {
+			return "";
+		}
+		String n = percorsoInterno.replace('\\', '/');
+		int taglio = n.lastIndexOf('/');
+		if (taglio >= 0) {
+			n = n.substring(taglio + 1);
+		}
+		n = n.trim();
+		// Un nome che sia solo "." o ".." non e' un file: si scarta.
+		return (n.equals(".") || n.equals("..")) ? "" : n;
 	}
 
 	/** Politica post-trasferimento sul file REMOTO (origine della direzione SFTP -> storage). */
@@ -371,7 +607,7 @@ public class SftpTransferService {
 		String filtroRisolto = patternDelGiorno(s);
 		Pattern filtro = compilaPattern(filtroRisolto);
 		logFiltro(idExecution, s, filtroRisolto);
-		Path tempDir = Files.createTempDirectory("sftp-up-");
+		Path tempDir = creaCartellaTemporanea("sftp-up-");
 
 		List<String> daInviare = new ArrayList<>();
 		int totaleInCartella = 0;
@@ -405,14 +641,13 @@ public class SftpTransferService {
 				log(idExecution, "[" + progressivo + "/" + daInviare.size() + "] INIZIO  " + nome
 						+ "   da " + cartellaStorage(s) + "/" + nome);
 				try {
-					byte[] contenuto = leggiDaStorage(s, nome);
-					Files.write(locale, contenuto);
+					long dimensione = scaricaDaStorage(s, nome, locale);
 					sftp.put(locale.toString(), percorsoRemoto(s.getSftpPath(), nome));
 
 					esito.file++;
-					esito.byteTotali += contenuto.length;
+					esito.byteTotali += dimensione;
 					log(idExecution, "[" + progressivo + "/" + daInviare.size() + "] OK      " + nome + "   "
-							+ formatByte(contenuto.length) + " in " + formatDurata(System.currentTimeMillis() - inizio)
+							+ formatByte(dimensione) + " in " + formatDurata(System.currentTimeMillis() - inizio)
 							+ "   a " + cartellaSftp(s) + "/" + nome);
 
 					archiviaStorage(s, nome, idExecution, esito);
@@ -499,31 +734,68 @@ public class SftpTransferService {
 		return nomi;
 	}
 
-	private byte[] leggiDaStorage(SftpSchedule s, String fileName) {
-		HttpHeaders headers = headerInterni();
-		headers.setContentType(MediaType.APPLICATION_JSON);
-		ReadFileRequest req = new ReadFileRequest(s.getStorageIntermediario(), s.getStorageType(), fileName,
-				s.getStorageFolder());
-
-		ResponseEntity<ReadFileResponse> resp = restTemplate.postForEntity(storageUrl + "/wr-storage/read",
-				new HttpEntity<>(req, headers), ReadFileResponse.class);
-		ReadFileResponse body = resp.getBody();
-		if (body == null || !body.isExists()) {
-			throw new IllegalStateException("File non presente su storage: " + fileName);
-		}
-		// exists=true con contenuto assente = file di 0 byte: si trasferisce vuoto, non e' un errore
-		// (trattarlo come "file non presente" nasconderebbe la vera situazione al lato ricevente).
-		return (body.getContent() == null) ? new byte[0] : body.getContent();
-	}
-
-	private void scriviSuStorage(SftpSchedule s, String fileName, byte[] contenuto) {
-		String url = UriComponentsBuilder.fromUriString(storageUrl + "/wr-storage/write-folder")
+	/**
+	 * Scarica un file dallo storage SU DISCO, in streaming.
+	 * <p>
+	 * Non si usa {@code /wr-storage/read}: quello restituisce il contenuto dentro un JSON codificato
+	 * base64, cioe' l'intero file in memoria piu' il 33% della codifica, su entrambi i lati. Con
+	 * archivi da GB e' insostenibile.
+	 *
+	 * @return byte scaricati
+	 */
+	private long scaricaDaStorage(SftpSchedule s, String fileName, Path destinazione) throws IOException {
+		String url = UriComponentsBuilder.fromUriString(storageUrl + "/wr-storage/download")
 				.queryParam("intermediario", s.getStorageIntermediario()).queryParam("type", s.getStorageType())
 				.queryParam("folder", s.getStorageFolder()).queryParam("fileName", fileName).toUriString();
 
-		HttpHeaders headers = headerInterni();
-		headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
-		restTemplate.exchange(url, HttpMethod.POST, new HttpEntity<>(contenuto, headers), Map.class);
+		java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url)).GET()
+				.timeout(java.time.Duration.ofMinutes(httpTimeoutMin));
+		if (internalToken != null && !internalToken.isBlank()) {
+			b.header("X-INTERNAL-TOKEN", internalToken);
+		}
+		try {
+			java.net.http.HttpResponse<Path> resp = httpFile().send(b.build(),
+					java.net.http.HttpResponse.BodyHandlers.ofFile(destinazione));
+			if (resp.statusCode() == 404) {
+				throw new IllegalStateException("File non presente su storage: " + fileName);
+			}
+			if (resp.statusCode() >= 300) {
+				throw new IllegalStateException("Storage ha risposto " + resp.statusCode() + " su " + fileName);
+			}
+			return Files.exists(destinazione) ? Files.size(destinazione) : 0L;
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new IOException("Download interrotto: " + fileName, e);
+		}
+	}
+
+	/**
+	 * Carica un file su storage leggendolo DA DISCO, in streaming ({@code BodyPublishers.ofFile}):
+	 * nessuna copia del contenuto in memoria, quindi la dimensione del file non e' un limite.
+	 */
+	private void caricaSuStorage(SftpSchedule s, String fileName, Path file) throws IOException {
+		String url = UriComponentsBuilder.fromUriString(storageUrl + "/wr-storage/write-stream")
+				.queryParam("intermediario", s.getStorageIntermediario()).queryParam("type", s.getStorageType())
+				.queryParam("folder", s.getStorageFolder()).queryParam("fileName", fileName).toUriString();
+
+		java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url))
+				.header("Content-Type", "application/octet-stream")
+				.timeout(java.time.Duration.ofMinutes(httpTimeoutMin))
+				.POST(java.net.http.HttpRequest.BodyPublishers.ofFile(file));
+		if (internalToken != null && !internalToken.isBlank()) {
+			b.header("X-INTERNAL-TOKEN", internalToken);
+		}
+		try {
+			java.net.http.HttpResponse<String> resp = httpFile().send(b.build(),
+					java.net.http.HttpResponse.BodyHandlers.ofString());
+			if (resp.statusCode() >= 300) {
+				throw new IllegalStateException("Storage ha risposto " + resp.statusCode() + " su " + fileName
+						+ (resp.body() == null || resp.body().isBlank() ? "" : " — " + abbrevia(resp.body(), 300)));
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new IOException("Caricamento interrotto: " + fileName, e);
+		}
 	}
 
 	private HttpHeaders headerInterni() {
