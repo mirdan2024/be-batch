@@ -47,6 +47,24 @@ public class BatchSubscription {
 
 	private boolean enabled = true;
 
+	/**
+	 * CODICE della definition da lanciare quando questa esecuzione si chiude CON ESITO POSITIVO. NULL =
+	 * nessun seguito.
+	 * <p>
+	 * Serve per i lavori che hanno senso solo in fila (prima si caricano le liste societarie, poi si
+	 * rilevano le variazioni): prima la sequenza si otteneva solo azzeccando due orari di cron
+	 * abbastanza distanti, cioe' indovinando quanto dura il primo.
+	 * <p>
+	 * E' il codice di una DEFINITION e non l'id di una sottoscrizione: un caricamento e' unico e globale,
+	 * mentre cio' che ne dipende e' spesso una sottoscrizione per intermediario. Indicando la definition,
+	 * be-batch lancia tutte le sottoscrizioni attive di quel lavoro.
+	 * <p>
+	 * Sta sulla sottoscrizione e non sulla definizione perche' e' una scelta di esercizio: la stessa
+	 * lavorazione puo' essere schedulata piu' volte con seguiti diversi, o senza seguito.
+	 */
+	@Column(name = "job_successivo", length = 100)
+	private String jobSuccessivo;
+
 	@Column(name = "last_run_at")
 	private LocalDateTime lastRunAt;
 
@@ -147,6 +165,14 @@ public class BatchSubscription {
 
 	public void setEnabled(boolean enabled) {
 		this.enabled = enabled;
+	}
+
+	public String getJobSuccessivo() {
+		return jobSuccessivo;
+	}
+
+	public void setJobSuccessivo(String jobSuccessivo) {
+		this.jobSuccessivo = jobSuccessivo;
 	}
 
 	public LocalDateTime getLastRunAt() {

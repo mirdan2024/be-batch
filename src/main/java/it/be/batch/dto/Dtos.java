@@ -18,9 +18,11 @@ public class Dtos {
 	// vuota/null lascia invariata quella esistente (non la si reinvia a ogni modifica).
 	// startAt: data/ora di partenza (decorrenza) in formato ISO locale "yyyy-MM-ddTHH:mm". Opzionale:
 	// null/vuoto = nessun vincolo (parte alla prossima occorrenza del cron).
+	// jobSuccessivo: CODICE della definition da lanciare a fine esecuzione riuscita (concatenamento).
+	// Vuoto/null = nessun seguito.
 	public record BatchSubscriptionRequest(Long idIntermediario, String customerName, Long batchDefinitionId,
 			String cronExpression, String username, String password, String timezone, Boolean enabled, String paramsJson,
-			String bodyJson, Long idUtenteAdmin, String startAt) {
+			String bodyJson, Long idUtenteAdmin, String startAt, String jobSuccessivo) {
 	}
 
 	// NB: nessun campo password. La password non viene mai restituita in lettura.
@@ -31,7 +33,9 @@ public class Dtos {
 			LocalDateTime startAt, String intermediarioNome,
 			// Elaborazione in corso: c'e' una batch_execution PENDING non ancora conclusa.
 			// esecuzioneDa = da quando (per mostrare la durata e capire se e' piantata).
-			boolean inEsecuzione, LocalDateTime esecuzioneDa) {
+			boolean inEsecuzione, LocalDateTime esecuzioneDa,
+			// Codice del lavoro lanciato a fine esecuzione riuscita (concatenamento). Null = nessuno.
+			String jobSuccessivo) {
 	}
 	
 

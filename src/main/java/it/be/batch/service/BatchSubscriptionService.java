@@ -170,6 +170,7 @@ public class BatchSubscriptionService {
 		entity.setIdUtenteAdmin(request.idUtenteAdmin());
 		entity.setDataCreazione(LocalDateTime.now());
 		entity.setStartAt(parseStartAt(request.startAt()));
+		entity.setJobSuccessivo(normalizzaJobSuccessivo(request.jobSuccessivo()));
 		entity.setNextRunAt(calculateNextRun(entity));
 
 		return toResponse(subscriptionRepository.save(entity));
@@ -205,6 +206,7 @@ public class BatchSubscriptionService {
 		entity.setParamsJson(request.paramsJson());
 		entity.setBodyJson(request.bodyJson());
 		entity.setStartAt(parseStartAt(request.startAt()));
+		entity.setJobSuccessivo(normalizzaJobSuccessivo(request.jobSuccessivo()));
 
 		entity.setNextRunAt(calculateNextRun(entity));
 
@@ -294,6 +296,15 @@ public class BatchSubscriptionService {
 	}
 
 	// NB: username incluso, password MAI (non c'è nel response record).
+	/**
+	 * Codice del lavoro successivo: vuoto equivale a "nessun seguito". Senza questa normalizzazione una
+	 * stringa vuota arrivata dal form verrebbe salvata come tale e la catena cercherebbe ogni volta una
+	 * definition con codice "", loggando un avviso a ogni esecuzione.
+	 */
+	private static String normalizzaJobSuccessivo(String valore) {
+		return (valore == null || valore.isBlank()) ? null : valore.trim();
+	}
+
 	private BatchSubscriptionResponse toResponse(BatchSubscription entity) {
 		return toResponse(entity, esecuzioniInCorso());
 	}
@@ -304,7 +315,7 @@ public class BatchSubscriptionService {
 				entity.getBatchDefinition().getCode(), entity.getCronExpression(), entity.getUsername(),
 				entity.getTimezone(), entity.isEnabled(), entity.getLastRunAt(), entity.getNextRunAt(),
 				entity.getParamsJson(), entity.getBodyJson(), entity.getIdUtenteAdmin(), entity.getStartAt(),
-				nomeIntermediario(entity.getIdIntermediario()), da != null, da);
+				nomeIntermediario(entity.getIdIntermediario()), da != null, da, entity.getJobSuccessivo());
 	}
 
 	/**

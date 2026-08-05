@@ -38,16 +38,20 @@ public class BatchExecutor {
 	// esito) attorno all'HTTP, non una che lo avvolge. TransactionTemplate e non @Transactional perché
 	// i metodi verrebbero invocati dall'interno della classe, bypassando il proxy transazionale di Spring.
 	private final TransactionTemplate transactionTemplate;
+	// Concatenamento: a esecuzione conclusa con esito positivo lancia il "job successivo" dichiarato
+	// sulla schedulazione.
+	private final BatchChainService chainService;
 
 	public BatchExecutor(RestTemplate restTemplate, ObjectMapper objectMapper,
 			BatchExecutionRepository executionRepository, BatchSubscriptionRepository subscriptionRepository,
-			TransactionTemplate transactionTemplate) {
+			TransactionTemplate transactionTemplate, BatchChainService chainService) {
 		super();
 		this.restTemplate = restTemplate;
 		this.objectMapper = objectMapper;
 		this.executionRepository = executionRepository;
 		this.subscriptionRepository = subscriptionRepository;
 		this.transactionTemplate = transactionTemplate;
+		this.chainService = chainService;
 	}
 
 	/** Taglia i testi lunghi per i log (il body completo va comunque su batch_execution.response_body). */
@@ -137,6 +141,20 @@ public class BatchExecutor {
 			subscription.setNextRunAt(calculateNextRun(subscription));
 			subscriptionRepository.save(subscription);
 		});
+
+		// 4) Concatenamento. SOLO nel ramo sincrono: con il 202 l'esecuzione e' ancora in corso e la
+		// chiuderà il servizio chiamando /batch-execution/{id}/finish — è li' che scatta la catena
+		// (BatchExecutionService.finish). Lanciare qui il seguito significherebbe farlo partire mentre il
+		// lavoro precedente sta ancora elaborando.
+		if (!presoInCarico) {
+			try {
+				chainService.esecuzioneConclusa(subscription, status);
+			} catch (Exception e) {
+				// Il seguito e' un servizio in piu': se non parte, l'esecuzione appena conclusa resta
+				// valida e il suo esito registrato.
+				logger.error("Catena non avviata dopo la subscription {}: {}", subscription.getId(), e.getMessage(), e);
+			}
+		}
 	}
 
 	private ResponseEntity<String> callRestBatch(BatchExecution execution, BatchSubscription subscription,
