@@ -109,6 +109,15 @@ public class SftpSchedule {
 	@Column(name = "data_cessazione")
 	private LocalDateTime dataCessazione;
 
+	/**
+	 * Posizione nell'elenco della pagina Schedulazioni SFTP, decisa a mano con le frecce. Serve a tenere
+	 * vicini i trasferimenti che si leggono insieme (lo scarico e il carico dello stesso flusso, le
+	 * schedulazioni dello stesso cliente): ordinando per id, un trasferimento aggiunto dopo finisce in
+	 * fondo e spezza il gruppo. Come su {@code batch_subscription}.
+	 */
+	@Column(name = "ordine")
+	private Integer ordine;
+
 	public Long getId() {
 		return id;
 	}
@@ -299,5 +308,13 @@ public class SftpSchedule {
 
 	public void setDataCessazione(LocalDateTime dataCessazione) {
 		this.dataCessazione = dataCessazione;
+	}
+
+	public Integer getOrdine() {
+		return ordine;
+	}
+
+	public void setOrdine(Integer ordine) {
+		this.ordine = ordine;
 	}
 }

@@ -53,12 +53,13 @@ public class SftpScheduleService {
 
 	public List<SftpScheduleResponse> findAll() {
 		Map<Long, LocalDateTime> inCorso = esecuzioniInCorso();
-		return scheduleRepository.findAll().stream().map(s -> toResponse(s, inCorso)).toList();
+		return scheduleRepository.findAllByOrderByOrdineAscIdAsc().stream().map(s -> toResponse(s, inCorso)).toList();
 	}
 
 	public List<SftpScheduleResponse> findByCustomerId(Long idIntermediario) {
 		Map<Long, LocalDateTime> inCorso = esecuzioniInCorso();
-		return scheduleRepository.findByIdIntermediario(idIntermediario).stream().map(s -> toResponse(s, inCorso))
+		return scheduleRepository.findByIdIntermediarioOrderByOrdineAscIdAsc(idIntermediario).stream()
+				.map(s -> toResponse(s, inCorso))
 				.toList();
 	}
 
@@ -76,8 +77,33 @@ public class SftpScheduleService {
 		e.setEnabled(request.enabled() == null || request.enabled());
 		e.setDataCreazione(LocalDateTime.now());
 		e.setNextRunAt(prossimaEsecuzione(e));
+		// In fondo all'elenco: da li' chi l'ha creata la sposta dove serve.
+		Integer max = scheduleRepository.maxOrdine();
+		e.setOrdine((max == null ? 0 : max) + 1);
 
 		return toResponse(scheduleRepository.save(e), esecuzioniInCorso());
+	}
+
+	/**
+	 * Scambia di posto due schedulazioni: e' quello che fanno le frecce dell'elenco. La riga con cui
+	 * scambiare la manda la pagina — e' quella che si VEDE sopra o sotto, che con un filtro attivo non
+	 * coincide con la successiva in assoluto. Stessa logica delle schedulazioni batch.
+	 */
+	@Transactional
+	public void scambiaOrdine(Long id, Long idAltro) {
+		SftpSchedule a = carica(id);
+		SftpSchedule b = carica(idAltro);
+
+		int ordineA = (a.getOrdine() != null) ? a.getOrdine() : a.getId().intValue();
+		int ordineB = (b.getOrdine() != null) ? b.getOrdine() : b.getId().intValue();
+		if (ordineA == ordineB) {
+			// Possibile solo fra righe mai riordinate: senza scarto lo scambio non muoverebbe niente.
+			ordineB = ordineA + 1;
+		}
+		a.setOrdine(ordineB);
+		b.setOrdine(ordineA);
+		scheduleRepository.save(a);
+		scheduleRepository.save(b);
 	}
 
 	@Transactional
@@ -129,10 +155,20 @@ public class SftpScheduleService {
 		scheduleRepository.deleteById(id);
 	}
 
-	/** Storico: ultime 50 esecuzioni, decrescente per data di inizio. */
-	public List<SftpExecutionResponse> findExecutions(Long scheduleId) {
-		return executionRepository.findTop50BySftpScheduleIdOrderByStartedAtDesc(scheduleId).stream()
-				.map(this::toExecutionResponse).toList();
+	/**
+	 * Storico trasferimenti, decrescente per data di inizio e paginato (pagina 1-based). Stessa forma
+	 * dello storico delle schedulazioni batch.
+	 */
+	public it.be.batch.dto.Dtos.PaginaResponse<SftpExecutionResponse> findExecutions(Long scheduleId, int page,
+			int size) {
+		int p = Math.max(0, page - 1);
+		int s = Math.min(Math.max(1, size), 200);
+		org.springframework.data.domain.Page<it.be.batch.entity.SftpExecution> pagina = executionRepository
+				.findBySftpScheduleIdOrderByStartedAtDesc(scheduleId,
+						org.springframework.data.domain.PageRequest.of(p, s));
+		return new it.be.batch.dto.Dtos.PaginaResponse<>(
+				pagina.getContent().stream().map(this::toExecutionResponse).toList(), pagina.getTotalElements(), page,
+				s);
 	}
 
 	/**

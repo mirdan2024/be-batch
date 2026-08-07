@@ -32,6 +32,17 @@ public class BatchExecution {
 	@Column(name = "started_at", nullable = false)
 	private LocalDateTime startedAt;
 
+	/**
+	 * Ultimo segno di vita del servizio: lo aggiorna ogni riga di telecronaca.
+	 * <p>
+	 * E' quello che guarda la rete di sicurezza sulle esecuzioni piantate. Prima guardava
+	 * {@code startedAt}, cioe' la DURATA: un'elaborazione piu' lunga della soglia veniva chiusa come
+	 * fallita anche mentre lavorava — e il caricamento delle liste societarie, sui volumi reali, dura
+	 * anche un giorno.
+	 */
+	@Column(name = "ultimo_aggiornamento")
+	private LocalDateTime ultimoAggiornamento;
+
 	@Column(name = "ended_at")
 	private LocalDateTime endedAt;
 
@@ -90,6 +101,14 @@ public class BatchExecution {
 
 	public void setStartedAt(LocalDateTime startedAt) {
 		this.startedAt = startedAt;
+	}
+
+	public LocalDateTime getUltimoAggiornamento() {
+		return ultimoAggiornamento;
+	}
+
+	public void setUltimoAggiornamento(LocalDateTime ultimoAggiornamento) {
+		this.ultimoAggiornamento = ultimoAggiornamento;
 	}
 
 	public LocalDateTime getEndedAt() {

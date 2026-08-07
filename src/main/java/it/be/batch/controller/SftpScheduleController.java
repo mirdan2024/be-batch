@@ -55,10 +55,11 @@ public class SftpScheduleController {
 		return service.findById(id);
 	}
 
-	/** Storico trasferimenti (ultimi 50, decrescente per data di inizio). */
+	/** Storico trasferimenti, decrescente per data di inizio e PAGINATO (pagina 1-based). */
 	@GetMapping("/{id}/executions")
-	public List<SftpExecutionResponse> executions(@PathVariable Long id) {
-		return service.findExecutions(id);
+	public it.be.batch.dto.Dtos.PaginaResponse<SftpExecutionResponse> executions(@PathVariable Long id,
+			@RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "10") int size) {
+		return service.findExecutions(id, page, size);
 	}
 
 	// Verifica della connessione PRIMA del salvataggio: la UI abilita "Salva" solo se l'esito e' ok.
@@ -95,6 +96,14 @@ public class SftpScheduleController {
 	@PostMapping("/{id}/stop")
 	public Map<String, Object> stop(@PathVariable Long id) {
 		return service.interrompi(id);
+	}
+
+	// Frecce dell'elenco: scambia di posto due schedulazioni. `conId` e' la riga che si vede sopra o
+	// sotto — la sceglie la pagina, perche' con un filtro attivo non coincide con la successiva in
+	// assoluto. Come su /batch-subscriptions/{id}/sposta.
+	@PostMapping("/{id}/sposta")
+	public void sposta(@PathVariable Long id, @RequestParam Long conId) {
+		service.scambiaOrdine(id, conId);
 	}
 
 	@PostMapping("/{id}/enable")

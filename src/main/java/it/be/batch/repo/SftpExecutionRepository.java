@@ -15,6 +15,13 @@ public interface SftpExecutionRepository extends JpaRepository<SftpExecution, Lo
 
 	List<SftpExecution> findTop50BySftpScheduleIdOrderByStartedAtDesc(Long sftpScheduleId);
 
+	/**
+	 * Storico trasferimenti di una schedulazione, PAGINATO. Come per le schedulazioni batch: il tetto
+	 * fisso a 50 rendeva irraggiungibile tutto cio' che stava piu' indietro.
+	 */
+	org.springframework.data.domain.Page<SftpExecution> findBySftpScheduleIdOrderByStartedAtDesc(Long sftpScheduleId,
+			org.springframework.data.domain.Pageable pageable);
+
 	List<SftpExecution> findByStatusAndEndedAtIsNull(String status);
 
 	List<SftpExecution> findBySftpScheduleIdAndStatusAndEndedAtIsNull(Long sftpScheduleId, String status);

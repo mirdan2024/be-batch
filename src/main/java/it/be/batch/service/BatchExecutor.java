@@ -72,6 +72,9 @@ public class BatchExecutor {
 			e.setBatchSubscription(subscription);
 			e.setStatus(AppConstants.STATUS_PENDING);
 			e.setStartedAt(LocalDateTime.now());
+			// Primo battito: da qui in poi lo aggiorna ogni riga di telecronaca. Serve a far partire il
+			// conteggio del silenzio dall'avvio anche per i servizi che non scrivono nulla.
+			e.setUltimoAggiornamento(LocalDateTime.now());
 			return executionRepository.save(e);
 		});
 

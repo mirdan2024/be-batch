@@ -65,6 +65,17 @@ public class BatchSubscription {
 	@Column(name = "job_successivo", length = 100)
 	private String jobSuccessivo;
 
+	/**
+	 * Posizione nell'elenco della pagina Schedulazioni batch, decisa a mano con le frecce.
+	 * <p>
+	 * Non e' una preferenza estetica: i lavori si leggono a gruppi — il caricamento delle liste con la
+	 * rilevazione delle variazioni che lo segue, le schedulazioni dello stesso cliente vicine. Ordinando
+	 * per id, un lavoro aggiunto dopo finisce in fondo e spezza il gruppo. Il criterio del
+	 * raggruppamento lo conosce chi configura, non e' deducibile dai dati: per questo e' manuale.
+	 */
+	@Column(name = "ordine")
+	private Integer ordine;
+
 	@Column(name = "last_run_at")
 	private LocalDateTime lastRunAt;
 
@@ -229,6 +240,14 @@ public class BatchSubscription {
 
 	public void setDataCessazione(LocalDateTime dataCessazione) {
 		this.dataCessazione = dataCessazione;
+	}
+
+	public Integer getOrdine() {
+		return ordine;
+	}
+
+	public void setOrdine(Integer ordine) {
+		this.ordine = ordine;
 	}
 
 	

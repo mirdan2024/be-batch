@@ -42,6 +42,11 @@ public class Dtos {
 	public record BatchExecutionRequest(Long id,String status, String response,Integer response_code) {
 	}
 
+	// Pagina di risultati per le liste della UI: righe piu' il TOTALE, che serve alla paginazione per
+	// sapere quante pagine esistono (con la sola lista si saprebbe solo che ce n'e' un'altra).
+	public record PaginaResponse<T>(java.util.List<T> items, long total, int page, int size) {
+	}
+
 	// Riga di storico esecuzione per la UI. durationMs = ended_at - started_at (null se non conclusa).
 	// responseBody = JSON di ritorno del servizio (può essere assente).
 	public record BatchExecutionResponse(Long id, String status, LocalDateTime startedAt, LocalDateTime endedAt,

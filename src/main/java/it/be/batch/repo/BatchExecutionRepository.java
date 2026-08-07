@@ -15,6 +15,14 @@ public interface BatchExecutionRepository extends JpaRepository<BatchExecution, 
 
     List<BatchExecution> findTop50ByBatchSubscriptionIdOrderByStartedAtDesc(Long subscriptionId);
 
+    /**
+     * Storico esecuzioni di una schedulazione, PAGINATO. Sostituisce il tetto fisso a 50 della modale:
+     * su un lavoro che gira ogni giorno cinquanta esecuzioni sono meno di due mesi, e il resto non era
+     * raggiungibile in nessun modo dall'interfaccia.
+     */
+    org.springframework.data.domain.Page<BatchExecution> findByBatchSubscriptionIdOrderByStartedAtDesc(
+            Long subscriptionId, org.springframework.data.domain.Pageable pageable);
+
     // Cancellazione dello storico esecuzioni di una sottoscrizione: necessaria PRIMA di eliminare la
     // sottoscrizione (la FK batch_execution -> batch_subscription bloccherebbe il delete altrimenti).
     void deleteByBatchSubscriptionId(Long subscriptionId);
@@ -30,10 +38,15 @@ public interface BatchExecutionRepository extends JpaRepository<BatchExecution, 
     // @Transactional sul metodo: una UPDATE via @Modifying pretende una transazione attiva e il
     // chiamante e' un metodo @Scheduled, che non ne apre nessuna (altrimenti: "No active transaction
     // for update or delete query"). Messa qui e non sullo scheduler cosi' vale per ogni chiamante.
+    // Si guarda l'ULTIMO SEGNO DI VITA, non l'istante di avvio: con startedAt il filtro misurava la
+    // DURATA e chiudeva come fallita qualsiasi elaborazione piu' lunga della soglia, anche mentre
+    // scriveva la telecronaca (il caricamento delle liste societarie dura anche un giorno). COALESCE
+    // per le righe precedenti alla colonna, che non hanno il battito.
     @Modifying
     @Transactional
     @Query("update BatchExecution e set e.status = :to, e.endedAt = :now, e.errorMessage = :msg "
-            + "where e.status = :from and e.endedAt is null and e.startedAt < :limite")
+            + "where e.status = :from and e.endedAt is null "
+            + "and coalesce(e.ultimoAggiornamento, e.startedAt) < :limite")
     int closeStalePending(@Param("from") String from, @Param("to") String to, @Param("now") LocalDateTime now,
             @Param("limite") LocalDateTime limite, @Param("msg") String msg);
 

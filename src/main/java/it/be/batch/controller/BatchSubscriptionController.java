@@ -48,10 +48,12 @@ public class BatchSubscriptionController {
         return service.findById(id);
     }
 
-    // Storico esecuzioni della sottoscrizione (ultime 50, decrescente per data di inizio).
+    // Storico esecuzioni della sottoscrizione, decrescente per data di inizio e PAGINATO (pagina
+    // 1-based). I default riproducono la prima schermata di prima; la modale usa i suoi controlli.
     @GetMapping("/{id}/executions")
-    public List<BatchExecutionResponse> executions(@PathVariable Long id) {
-        return service.findExecutions(id);
+    public it.be.batch.dto.Dtos.PaginaResponse<BatchExecutionResponse> executions(@PathVariable Long id,
+            @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "10") int size) {
+        return service.findExecutions(id, page, size);
     }
 
     // Verifica delle credenziali PRIMA del salvataggio: la UI abilita "Salva" solo se l'esito e' ok.
@@ -94,6 +96,14 @@ public class BatchSubscriptionController {
     @PostMapping("/{id}/stop")
     public java.util.Map<String, Object> stop(@PathVariable Long id) {
         return service.interrompi(id);
+    }
+
+    // Frecce dell'elenco: scambia di posto due schedulazioni. `conId` e' la riga che si vede sopra o
+    // sotto — la sceglie la pagina, perche' con un filtro attivo non coincide con la successiva in
+    // assoluto. POST e non PATCH: il gateway instrada solo GET/POST/PUT (vedi nota sopra).
+    @PostMapping("/{id}/sposta")
+    public void sposta(@PathVariable Long id, @RequestParam Long conId) {
+        service.scambiaOrdine(id, conId);
     }
 
     @PostMapping("/{id}/enable")

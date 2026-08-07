@@ -77,8 +77,10 @@ public class BatchScheduler {
 		int chiuse = executionRepository.closeStalePending(it.ai.client.constants.AppConstants.STATUS_PENDING,
 				it.ai.client.constants.AppConstants.STATUS_FAILED,
 				java.time.LocalDateTime.now(), limite,
-				"Nessun aggiornamento dal servizio da oltre " + staleTimeoutHours
-						+ " ore: esecuzione chiusa d'ufficio. Verificare che il servizio raggiunga be-batch"
+				"Il servizio non da' segni di vita da oltre " + staleTimeoutHours
+						+ " ore (nessuna riga di avanzamento): esecuzione chiusa d'ufficio. NB: conta il"
+						+ " silenzio, non la durata — un'elaborazione lunga che continua a scrivere non"
+						+ " viene toccata. Verificare che il servizio raggiunga be-batch"
 						+ " (api.batch.service.url) e che chiami /batch-execution/{id}/finish.");
 		if (chiuse > 0) {
 			logger.warn("Chiuse {} esecuzioni rimaste PENDING oltre {} ore", chiuse, staleTimeoutHours);

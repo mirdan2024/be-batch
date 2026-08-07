@@ -131,11 +131,43 @@ public class BatchSubscriptionService {
 	}
 
 	public List<BatchSubscriptionResponse> findAll() {
-		return subscriptionRepository.findAll().stream().map(this::toResponse).toList();
+		return subscriptionRepository.findAllByOrderByOrdineAscIdAsc().stream().map(this::toResponse).toList();
 	}
 
 	public List<BatchSubscriptionResponse> findByCustomerId(Long customerId) {
-		return subscriptionRepository.findByIdIntermediario(customerId).stream().map(this::toResponse).toList();
+		return subscriptionRepository.findByIdIntermediarioOrderByOrdineAscIdAsc(customerId).stream()
+				.map(this::toResponse).toList();
+	}
+
+	/**
+	 * Scambia di posto due schedulazioni: e' quello che fanno le frecce dell'elenco.
+	 * <p>
+	 * La riga con cui scambiare la sceglie la pagina e la manda: e' quella che si VEDE sopra o sotto,
+	 * che con un filtro attivo non e' detto sia la successiva in assoluto. Deciderlo qui, sull'ordine
+	 * completo, farebbe sparire la riga dall'elenco filtrato senza che si sia mossa dove ci si aspetta.
+	 * <p>
+	 * Le righe mai riordinate possono avere {@code ordine} nullo: si ripiega sull'id, che e' il valore
+	 * con cui la colonna e' stata inizializzata.
+	 */
+	@Transactional
+	public void scambiaOrdine(Long id, Long idAltro) {
+		BatchSubscription a = subscriptionRepository.findById(id)
+				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+		BatchSubscription b = subscriptionRepository.findById(idAltro)
+				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch da scambiare non trovata"));
+
+		int ordineA = (a.getOrdine() != null) ? a.getOrdine() : a.getId().intValue();
+		int ordineB = (b.getOrdine() != null) ? b.getOrdine() : b.getId().intValue();
+		if (ordineA == ordineB) {
+			// Puo' succedere solo fra righe mai riordinate con id diversi: si forza uno scarto, altrimenti
+			// lo scambio non cambierebbe niente e la freccia sembrerebbe rotta.
+			ordineB = ordineA + 1;
+		}
+		a.setOrdine(ordineB);
+		b.setOrdine(ordineA);
+		subscriptionRepository.save(a);
+		subscriptionRepository.save(b);
+		logger.info("Schedulazioni {} e {} scambiate di posto ({} <-> {})", id, idAltro, ordineA, ordineB);
 	}
 
 	public BatchSubscriptionResponse findById(Long id) {
@@ -172,6 +204,10 @@ public class BatchSubscriptionService {
 		entity.setStartAt(parseStartAt(request.startAt()));
 		entity.setJobSuccessivo(normalizzaJobSuccessivo(request.jobSuccessivo()));
 		entity.setNextRunAt(calculateNextRun(entity));
+		// In fondo all'elenco: da li' chi l'ha creata la sposta dove serve. Inserirla in mezzo con un
+		// criterio automatico sarebbe una scelta al posto suo, e sbagliata quasi sempre.
+		Integer max = subscriptionRepository.maxOrdine();
+		entity.setOrdine((max == null ? 0 : max) + 1);
 
 		return toResponse(subscriptionRepository.save(entity));
 	}
@@ -250,9 +286,21 @@ public class BatchSubscriptionService {
 	}
 
 	// Storico esecuzioni della sottoscrizione: ultime 50, ordine decrescente per data di inizio.
-	public List<BatchExecutionResponse> findExecutions(Long subscriptionId) {
-		return executionRepository.findTop50ByBatchSubscriptionIdOrderByStartedAtDesc(subscriptionId)
-				.stream().map(this::toExecutionResponse).toList();
+	/**
+	 * Storico esecuzioni di una schedulazione, paginato (pagina 1-based, come nel resto dell'app).
+	 * <p>
+	 * Prima erano le ultime 50 e basta: su un lavoro giornaliero sono meno di due mesi, e cio' che stava
+	 * piu' indietro non era raggiungibile da nessuna parte nell'interfaccia.
+	 */
+	public it.be.batch.dto.Dtos.PaginaResponse<BatchExecutionResponse> findExecutions(Long subscriptionId, int page,
+			int size) {
+		int p = Math.max(0, page - 1);
+		int s = Math.min(Math.max(1, size), 200);
+		org.springframework.data.domain.Page<it.be.batch.entity.BatchExecution> pagina = executionRepository
+				.findByBatchSubscriptionIdOrderByStartedAtDesc(subscriptionId,
+						org.springframework.data.domain.PageRequest.of(p, s));
+		return new it.be.batch.dto.Dtos.PaginaResponse<>(pagina.getContent().stream().map(this::toExecutionResponse)
+				.toList(), pagina.getTotalElements(), page, s);
 	}
 
 	private BatchExecutionResponse toExecutionResponse(BatchExecution e) {

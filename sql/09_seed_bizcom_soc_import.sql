@@ -38,9 +38,10 @@ SELECT
 WHERE @esiste = 0;
 
 -- ----------------------------------------------------------------------------
--- 2) DELTA — aggiornamento incrementale con STORICO: nessun TRUNCATE; per ogni riga in arrivo la
---    versione attiva con la stessa chiave di business viene chiusa (data_cessazione = NOW()) e la
---    nuova riga viene inserita. I dati correnti sono quelli con data_cessazione IS NULL.
+-- 2) DELTA — file che porta solo cio' che e' cambiato. Passa dal confronto delle impronte come la
+--    modalita' FULL_COME_DELTA (vedi seed 19): nessun TRUNCATE delle correnti, le versioni superate
+--    finiscono in soc_*_storico, le righe invariate non si toccano e sulle tabelle figlie le righe
+--    assenti dal file — limitatamente alle societa' che l'export menziona — vengono dichiarate USCITE.
 -- ----------------------------------------------------------------------------
 SET @esisteDelta = (SELECT COUNT(*) FROM `db_base`.`batch_definition` WHERE `code` = 'bizcom-soc-import-delta');
 
@@ -48,7 +49,7 @@ INSERT INTO `db_base`.`batch_definition`
   (`code`, `description`, `endpoint_url`, `body_json`, `http_method`, `enabled`, `data_creazione`)
 SELECT
   'bizcom-soc-import-delta',
-  'Caricamento DELTA liste societarie bizcom: storicizza le versioni superate (data_cessazione) e inserisce le nuove righe, senza TRUNCATE',
+  'Caricamento DELTA liste societarie bizcom: applica la differenza del file (nuovi, variati con storicizzazione della versione precedente, uscite sulle tabelle figlie), senza TRUNCATE delle correnti',
   'http://localhost:8094/be-openapi/bizcom-import/run?mode=DELTA',
   '{}',
   'POST',
@@ -133,7 +134,7 @@ WHERE @esisteDelta = 0;
 --   }
 --
 -- NB: il FULL fa TRUNCATE+reload (durante l'esecuzione i dati sono temporaneamente incompleti),
--- quindi va eseguito in finestra notturna / di fermo. Il DELTA non fa TRUNCATE: storicizza le
--- versioni superate (data_cessazione) e inserisce le nuove righe.
+-- quindi va eseguito in finestra notturna / di fermo. Il DELTA non tocca le correnti fino a confronto
+-- finito: carica in staging e applica solo la differenza.
 -- Test manuale senza attendere il cron: azione "Esegui ora" (razzo) nella pagina Schedulazioni batch.
 -- ============================================================================

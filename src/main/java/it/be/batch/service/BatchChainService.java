@@ -30,6 +30,12 @@ import it.be.batch.repo.BatchSubscriptionRepository;
  * farebbe partire il secondo lavoro mentre il primo sta ancora lavorando, che e' esattamente il problema
  * da risolvere.
  *
+ * <h3>Che cosa puo' lanciare</h3>
+ * Tutte le schedulazioni di quel lavoro, <b>bloccate comprese</b>: "bloccata" ferma il cron, non i lanci
+ * espliciti — il pulsante "Esegui ora" gira gia' su una schedulazione bloccata, e la catena e' un lancio
+ * esplicito quanto quello. E' anzi la configurazione naturale di un lavoro che deve girare SOLO in coda a
+ * un altro. Restano fuori le schedulazioni eliminate e quelle di una definition disattivata.
+ *
  * <h3>La catena non rientra su se stessa</h3>
  * Si tiene traccia dei codici gia' attraversati e si rifiuta un lavoro gia' presente nella catena in
  * corso; in piu' c'e' un tetto di profondita'. Un anello (A chiama B, B chiama A) girerebbe altrimenti
@@ -107,12 +113,12 @@ public class BatchChainService {
 
 		List<BatchSubscription> daLanciare = subscriptionRepository.findAttiveByDefinitionCode(successivo);
 		if (daLanciare.isEmpty()) {
-			// Silenzio no: chi ha configurato la catena si aspetta che qualcosa parta. Le cause tipiche
-			// sono un refuso nel codice o tutte le sottoscrizioni bloccate, e senza questo log il sintomo
-			// osservato sarebbe soltanto "il secondo lavoro non e' partito".
-			logger.warn("Catena: nessuna sottoscrizione ATTIVA per il lavoro '{}' (dopo '{}'). Nulla da lanciare:"
-					+ " verificare che il codice esista in batch_definition e che la schedulazione non sia bloccata.",
-					successivo, codiceCorrente);
+			// Silenzio no: chi ha configurato la catena si aspetta che qualcosa parta. Restano solo due
+			// cause — il codice non esiste in batch_definition, oppure la definition e' disattivata o la
+			// schedulazione eliminata — perche' le bloccate la catena le lancia.
+			logger.warn("Catena: nessuna sottoscrizione lanciabile per il lavoro '{}' (dopo '{}'). Nulla da"
+					+ " lanciare: verificare che il codice esista in batch_definition, che la definition sia"
+					+ " abilitata e che la schedulazione non sia stata eliminata.", successivo, codiceCorrente);
 			return;
 		}
 
@@ -120,8 +126,13 @@ public class BatchChainService {
 		for (BatchSubscription succ : daLanciare) {
 			catenaPerSubscription.put(succ.getId(), percorso);
 			String stato = s.eseguiUnaTantum(succ.getId());
-			logger.info("Catena {} -> {}: lanciata subscription {} (intermediario {}), esito avvio: {}",
-					codiceCorrente, successivo, succ.getId(), succ.getIdIntermediario(), stato);
+			// Si dichiara quando si lancia una schedulazione bloccata: e' il comportamento voluto (il
+			// blocco ferma il cron, non i lanci espliciti) ma davanti a un lavoro partito "da solo" a un
+			// orario inatteso, questa riga e' la differenza fra capirlo subito e cercarlo per un'ora.
+			logger.info("Catena {} -> {}: lanciata subscription {} (intermediario {}{}), esito avvio: {}",
+					codiceCorrente, successivo, succ.getId(), succ.getIdIntermediario(),
+					succ.isEnabled() ? "" : ", schedulazione BLOCCATA: la lancia la catena, non il cron",
+					stato);
 		}
 	}
 }

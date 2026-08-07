@@ -37,6 +37,9 @@ public class BatchExecutionService {
 					.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")) + "  " + message;
 			String precedente = e.getLog();
 			e.setLog((precedente == null || precedente.isBlank()) ? riga : precedente + System.lineSeparator() + riga);
+			// Battito del servizio: e' su questo che la rete di sicurezza decide se l'esecuzione e' morta.
+			// Finche' arrivano righe di telecronaca, sta lavorando — per quanto a lungo duri.
+			e.setUltimoAggiornamento(java.time.LocalDateTime.now());
 			repository.save(e);
 		});
 	}
