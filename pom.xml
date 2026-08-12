@@ -14,7 +14,35 @@
 	</parent>
 	<properties>
 		<java.version>25</java.version>
+		<!-- Security: patch delle versioni jackson del BOM di Boot 4.1 (CVE-2026-59889, CVE-2026-54515,
+		     GHSA-mhm7-754m-9p8w). -->
+		<jackson-2-bom.version>2.21.5</jackson-2-bom.version>
+		<jackson-bom.version>3.1.5</jackson-bom.version>
+		<bouncycastle.version>1.84</bouncycastle.version>
 	</properties>
+
+	<!-- sshj 0.38.0 dichiara BouncyCastle 1.75, che porta 7 CVE (Marvin attack CVE-2024-30171,
+	     DNS poisoning CVE-2024-34447, LDAP injection CVE-2026-0636, loop infinito CVE-2024-30172...).
+	     BC e' API-stabile sulla linea jdk18on: si allineano tutti e tre gli artifact a 1.84. -->
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.bouncycastle</groupId>
+				<artifactId>bcprov-jdk18on</artifactId>
+				<version>${bouncycastle.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.bouncycastle</groupId>
+				<artifactId>bcpkix-jdk18on</artifactId>
+				<version>${bouncycastle.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.bouncycastle</groupId>
+				<artifactId>bcutil-jdk18on</artifactId>
+				<version>${bouncycastle.version}</version>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
 
 	<dependencies>
 		<!-- Dipendenza custom locale/remota, verifica gruppoId -->
