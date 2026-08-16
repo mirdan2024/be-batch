@@ -19,6 +19,9 @@
 		<jackson-2-bom.version>2.21.5</jackson-2-bom.version>
 		<jackson-bom.version>3.1.5</jackson-bom.version>
 		<bouncycastle.version>1.84</bouncycastle.version>
+        <!-- Security: log4j 2.25.4 del BOM di Boot 4.1 e' esposto a GHSA-qv9r-c865-cp47
+             (encoding errato di float non-finiti in MapMessage). Corretto in 2.25.5. -->
+        <log4j2.version>2.25.5</log4j2.version>
 	</properties>
 
 	<!-- sshj 0.38.0 dichiara BouncyCastle 1.75, che porta 7 CVE (Marvin attack CVE-2024-30171,
