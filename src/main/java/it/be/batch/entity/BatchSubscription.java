@@ -21,7 +21,18 @@ public class BatchSubscription {
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	private Long id;
 
-	@Column(name = "id_intermediario", nullable = false)
+	/**
+	 * Intermediario della schedulazione. <b>Facoltativo.</b>
+	 * <p>
+	 * Nullo significa "non ristretta a un cliente": cosa comporti dipende dal job, ed e' la definizione
+	 * a dichiararlo con {@code batch_definition.ambito_intermediario}. Per i job che non sono per
+	 * cliente (ripasso fonti, purge, caricamenti bizcom) il campo non viene nemmeno chiesto.
+	 * <p>
+	 * Era {@code nullable = false}, e la colonna a database NOT NULL: salvare una schedulazione senza
+	 * intermediario falliva con "Column 'id_intermediario' cannot be null". Vedi
+	 * sql/02_batch_subscription_intermediario_nullable.sql.
+	 */
+	@Column(name = "id_intermediario")
 	private Long idIntermediario;
 
 	@ManyToOne(fetch = FetchType.EAGER)

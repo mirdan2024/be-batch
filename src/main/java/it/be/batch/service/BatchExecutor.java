@@ -172,6 +172,14 @@ public class BatchExecutor {
 		headers.setBearerAuth(jwtToken);
 		headers.add("idExecution", execution.getId() + "");
 
+		// INTERMEDIARIO della sottoscrizione, quando c'e'. Il campo e' facoltativo: lasciandolo vuoto la
+		// schedulazione non e' ristretta a un cliente e il servizio a valle lavora su TUTTI i record.
+		// Va inoltrato perche' il servizio non puo' dedurlo: dal JWT ricava l'intermediario dell'UTENZA
+		// con cui il batch si autentica, che e' un'altra cosa e non sa nulla di questa scelta.
+		if (subscription.getIdIntermediario() != null) {
+			headers.add("idIntermediario", subscription.getIdIntermediario() + "");
+		}
+
 		HttpEntity<String> request = new HttpEntity<>(subscription.getBodyJson(), headers);
 
 		return restTemplate.exchange(resolvedUrl, HttpMethod.valueOf(definition.getHttpMethod().name()), request,

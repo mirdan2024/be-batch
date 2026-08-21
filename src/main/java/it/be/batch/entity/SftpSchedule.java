@@ -39,7 +39,12 @@ public class SftpSchedule {
 	@Column(nullable = false)
 	private String nome;
 
-	@Column(name = "id_intermediario", nullable = false)
+	/**
+	 * Intermediario della schedulazione. <b>Facoltativo.</b> Nullo = trasferimento non intestato a un
+	 * cliente: vale per tutti, e la cartella su be-storage e' quella condivisa (intermediario 0).
+	 * Vedi sql/03_sftp_schedule_intermediario_nullable.sql.
+	 */
+	@Column(name = "id_intermediario")
 	private Long idIntermediario;
 
 	@Column(nullable = false)

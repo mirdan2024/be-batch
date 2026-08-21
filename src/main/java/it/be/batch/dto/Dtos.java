@@ -11,7 +11,7 @@ public class Dtos {
 	}
 
 	public record BatchDefinitionResponse(Long id, String code, String description, String endpointUrl,
-			HttpMethodType httpMethod, boolean enabled) {
+			HttpMethodType httpMethod, boolean enabled, String ambitoIntermediario) {
 	}
 
 	// username/password: credenziali con cui la schedulazione esegue il servizio. In update la password

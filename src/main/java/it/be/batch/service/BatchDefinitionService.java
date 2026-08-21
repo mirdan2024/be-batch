@@ -90,7 +90,8 @@ public class BatchDefinitionService {
                 entity.getDescription(),
                 entity.getEndpointUrl(),
                 entity.getHttpMethod(),
-                entity.isEnabled()
+                entity.isEnabled(),
+                entity.getAmbitoIntermediario()
         );
     }
 }

@@ -54,6 +54,24 @@ public class BatchDefinition {
 		this.stopUrl = stopUrl;
 	}
 
+	/**
+	 * Ambito per intermediario DICHIARATO DAL JOB: e' il job a sapere se ha senso restringerlo a un
+	 * cliente, non chi compila la schedulazione. NULL o "NESSUNO" = lavora su dati comuni e il form non
+	 * chiede nemmeno l'intermediario; "FILTRO" = il job legge il campo (vuoto = tutti, valorizzato =
+	 * solo quel cliente); "UTENZA" = l'ambito sono le credenziali del batch e il campo e' solo
+	 * un'etichetta. Vedi sql/01_batch_definition_ambito_intermediario.sql.
+	 */
+	@Column(name = "ambito_intermediario", length = 16)
+	private String ambitoIntermediario;
+
+	public String getAmbitoIntermediario() {
+		return ambitoIntermediario;
+	}
+
+	public void setAmbitoIntermediario(String ambitoIntermediario) {
+		this.ambitoIntermediario = ambitoIntermediario;
+	}
+
 	@Column(name = "data_creazione", nullable = false)
 	private LocalDateTime dataCreazione;
 

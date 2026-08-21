@@ -234,9 +234,9 @@ public class SftpScheduleService {
 		if (r.nome() == null || r.nome().isBlank()) {
 			throw new RuntimeException("Il nome della schedulazione è obbligatorio");
 		}
-		if (r.idIntermediario() == null) {
-			throw new RuntimeException("L'intermediario è obbligatorio");
-		}
+		// L'intermediario NON e' obbligatorio: assente significa "vale per tutti", e in quel caso i file
+		// vanno nella cartella condivisa dello storage (intermediario 0), che il form propone da solo.
+		// Resta obbligatorio storageIntermediario, che e' il percorso vero e proprio.
 		if (!SftpSchedule.DIR_SFTP_TO_STORAGE.equals(r.direzione())
 				&& !SftpSchedule.DIR_STORAGE_TO_SFTP.equals(r.direzione())) {
 			throw new RuntimeException("Direzione non valida: " + r.direzione());
