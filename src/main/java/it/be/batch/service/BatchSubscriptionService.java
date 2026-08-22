@@ -58,6 +58,18 @@ public class BatchSubscriptionService {
 	@Value("${routing.internal-token:}")
 	private String internalToken;
 
+	/**
+	 * Toglie gli spazi dal token interno. Un valore generato con {@code openssl rand -base64 32} si
+	 * porta dietro un a capo, e un a capo dentro il valore di un header fa fallire la chiamata con
+	 * un {@code invalid header value} che non nomina la property colpevole.
+	 */
+	@jakarta.annotation.PostConstruct
+	void normalizzaTokenInterno() {
+		if (internalToken != null) {
+			internalToken = internalToken.trim();
+		}
+	}
+
 	public BatchSubscriptionService(BatchSubscriptionRepository subscriptionRepository,
 			BatchDefinitionRepository definitionRepository, BatchExecutionRepository executionRepository,
 			CredentialCipher credentialCipher, IntermediarioRefRepository intermediarioRefRepository,

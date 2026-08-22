@@ -5,7 +5,7 @@
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>be-batch</groupId>
 	<artifactId>be-batch</artifactId>
-	<version>1.0.7</version>
+	<version>1.0.8</version>
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
