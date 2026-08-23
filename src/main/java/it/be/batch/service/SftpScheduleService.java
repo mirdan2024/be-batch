@@ -130,9 +130,9 @@ public class SftpScheduleService {
 		SftpSchedule e = carica(id);
 		e.setEnabled(true);
 		e.setDataCessazione(null);
-		if (e.getNextRunAt() == null) {
-			e.setNextRunAt(prossimaEsecuzione(e));
-		}
+		// Ricalcolo SEMPRE, come per le schedulazioni batch: riattivandone una ferma da settimane, la
+		// data vecchia resterebbe nel passato. Lo scheduler non legge il cron, legge solo next_run_at.
+		e.setNextRunAt(prossimaEsecuzione(e));
 		scheduleRepository.save(e);
 	}
 

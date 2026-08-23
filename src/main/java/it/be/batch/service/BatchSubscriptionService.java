@@ -268,9 +268,14 @@ public class BatchSubscriptionService {
 
 		entity.setEnabled(true);
 		entity.setDataCessazione(null);
-		if (entity.getNextRunAt() == null) {
-			entity.setNextRunAt(calculateNextRun(entity));
-		}
+		// SI RICALCOLA SEMPRE, non solo quando e' nulla. Riattivando una schedulazione ferma da
+		// settimane, la data vecchia restava nel passato: lo scheduler non guarda il cron, guarda solo
+		// next_run_at, quindi si ritrovava una sottoscrizione "da eseguire da tre settimane" che
+		// partiva al primo giro come recupero inatteso — e nel frattempo la pagina mostrava una
+		// "prossima esecuzione" gia' passata, che non voleva dire niente.
+		// nextRun() non produce mai una data passata: con startAt scaduta o assente parte da adesso.
+		// Con cron vuoto torna null, ed e' giusto: quella sottoscrizione e' manuale.
+		entity.setNextRunAt(calculateNextRun(entity));
 
 		subscriptionRepository.save(entity);
 	}
