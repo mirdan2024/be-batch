@@ -3,6 +3,7 @@ package it.be.batch.service;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -22,6 +23,8 @@ import it.ai.client.constants.AppConstants;
 import it.be.batch.dto.Dtos.BatchExecutionResponse;
 import it.be.batch.dto.Dtos.BatchSubscriptionRequest;
 import it.be.batch.dto.Dtos.BatchSubscriptionResponse;
+import it.be.batch.dto.Dtos.CalendarioResponse;
+import it.be.batch.dto.Dtos.OccorrenzaCalendario;
 import it.be.batch.dto.Dtos.LoginResponse;
 import it.be.batch.dto.Dtos.TestCredentialsResponse;
 import it.be.batch.dto.LoginPojo;
@@ -144,6 +147,75 @@ public class BatchSubscriptionService {
 
 	public List<BatchSubscriptionResponse> findAll() {
 		return subscriptionRepository.findAllByOrderByOrdineAscIdAsc().stream().map(this::toResponse).toList();
+	}
+
+	/** Quante occorrenze al massimo per singola schedulazione: un cron al secondo ne farebbe 86.400 al giorno. */
+	private static final int MAX_OCCORRENZE_PER_SCHEDULAZIONE = 500;
+
+	/**
+	 * Il calendario delle partenze previste in una finestra.
+	 *
+	 * <p>
+	 * Serve a pianificare: prima di aggiungere una schedulazione si guarda cosa c'e' gia' in quella
+	 * fascia oraria. Per questo comprende anche le schedulazioni <b>bloccate</b> — sono spente adesso,
+	 * ma riaccenderle e' un attimo e tornerebbero a occupare lo slot.
+	 * </p>
+	 *
+	 * <p>
+	 * Le occorrenze le calcola {@link CronScheduleUtil#occorrenze}, cioe' lo stesso motore con cui lo
+	 * scheduler decide le partenze vere: un calendario costruito con un altro parser mostrerebbe orari
+	 * che non succedono.
+	 * </p>
+	 */
+	public CalendarioResponse calendario(LocalDateTime da, LocalDateTime a, Long idIntermediario) {
+		List<OccorrenzaCalendario> occorrenze = new ArrayList<>();
+		List<String> avvisi = new ArrayList<>();
+		int senzaCron = 0;
+
+		List<BatchSubscription> sottoscrizioni = (idIntermediario != null)
+				? subscriptionRepository.findByIdIntermediarioOrderByOrdineAscIdAsc(idIntermediario)
+				: subscriptionRepository.findAllByOrderByOrdineAscIdAsc();
+
+		for (BatchSubscription s : sottoscrizioni) {
+			// Le schedulazioni cessate non esistono piu' per nessuno: non sono "bloccate", sono tolte.
+			if (s.getDataCessazione() != null) {
+				continue;
+			}
+			String codice = (s.getBatchDefinition() != null) ? s.getBatchDefinition().getCode() : null;
+			if (s.getCronExpression() == null || s.getCronExpression().isBlank()) {
+				// Manuale: nessuna partenza automatica, quindi nessuno slot occupato. Si conta perche'
+				// chi guarda il calendario deve sapere che esistono lavori che non compaiono qui.
+				senzaCron++;
+				continue;
+			}
+			List<LocalDateTime> quando = CronScheduleUtil.occorrenze(s.getCronExpression(), s.getTimezone(),
+					s.getStartAt(), da, a, MAX_OCCORRENZE_PER_SCHEDULAZIONE);
+			if (quando.isEmpty() && !cronValido(s.getCronExpression())) {
+				avvisi.add("Espressione cron non valida su \"" + codice + "\" (id " + s.getId()
+						+ "): la schedulazione non compare sul calendario");
+				continue;
+			}
+			if (quando.size() >= MAX_OCCORRENZE_PER_SCHEDULAZIONE) {
+				avvisi.add("\"" + codice + "\" (id " + s.getId() + ") supera le "
+						+ MAX_OCCORRENZE_PER_SCHEDULAZIONE + " partenze nel periodo: ne sono mostrate solo le prime");
+			}
+			for (LocalDateTime q : quando) {
+				occorrenze.add(new OccorrenzaCalendario(q, s.getId(), codice, null,
+						nomeIntermediario(s.getIdIntermediario()), s.isEnabled(), s.getCronExpression(),
+						s.getTimezone()));
+			}
+		}
+		occorrenze.sort(java.util.Comparator.comparing(OccorrenzaCalendario::quando));
+		return new CalendarioResponse(da, a, occorrenze, avvisi, senzaCron);
+	}
+
+	private boolean cronValido(String cron) {
+		try {
+			org.springframework.scheduling.support.CronExpression.parse(cron);
+			return true;
+		} catch (Exception e) {
+			return false;
+		}
 	}
 
 	public List<BatchSubscriptionResponse> findByCustomerId(Long customerId) {

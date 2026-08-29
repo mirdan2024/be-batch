@@ -4,6 +4,9 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.springframework.scheduling.support.CronExpression;
 
 /**
@@ -43,6 +46,61 @@ public final class CronScheduleUtil {
 		}
 		ZonedDateTime next = cron.next(base);
 		return (next != null) ? next.toLocalDateTime() : null;
+	}
+
+	/**
+	 * Tutte le occorrenze di un cron in una finestra, per il calendario delle schedulazioni.
+	 *
+	 * <p>
+	 * Usa lo STESSO {@link CronExpression} di {@link #nextRun}, che e' quello con cui lo scheduler
+	 * decide davvero quando far partire un job. Espandere il cron altrove — nel front-end, con un
+	 * parser diverso — produrrebbe un calendario che col tempo racconta orari che non succedono: e'
+	 * esattamente il tipo di seconda verita' che questo metodo esiste per evitare.
+	 * </p>
+	 *
+	 * <p>
+	 * Il tetto {@code max} non e' prudenza: un cron al secondo genererebbe 86.400 occorrenze al giorno.
+	 * Quando scatta, il chiamante deve dirlo — un calendario troncato in silenzio si legge come un
+	 * calendario completo.
+	 * </p>
+	 *
+	 * @param startAt decorrenza della sottoscrizione: prima di quella non parte nulla
+	 * @return le occorrenze nel fuso della schedulazione, in ordine; vuota se il cron manca o non e'
+	 *         valido
+	 */
+	public static List<LocalDateTime> occorrenze(String cronExpression, String timezone, LocalDateTime startAt,
+			LocalDateTime da, LocalDateTime a, int max) {
+
+		List<LocalDateTime> out = new ArrayList<>();
+		if (cronExpression == null || cronExpression.isBlank() || da == null || a == null || !da.isBefore(a)) {
+			return out;
+		}
+		CronExpression cron;
+		try {
+			cron = CronExpression.parse(cronExpression);
+		} catch (Exception e) {
+			// Un cron non valido e' gia' un problema suo: qui si tace e non si mostrano occorrenze,
+			// invece di far fallire l'intero calendario per una riga scritta male.
+			return out;
+		}
+		ZoneId zone = zoneOf(timezone);
+		// Si parte dall'istante PRIMA della finestra: cron.next() e' strettamente successivo, quindi
+		// partendo da 'da' si perderebbe un'occorrenza che cade esattamente sul primo istante.
+		ZonedDateTime cursore = da.atZone(zone).minusNanos(1);
+		ZonedDateTime fine = a.atZone(zone);
+		ZonedDateTime inizio = (startAt != null) ? startAt.atZone(zone) : null;
+
+		while (out.size() < max) {
+			ZonedDateTime prossima = cron.next(cursore);
+			if (prossima == null || !prossima.isBefore(fine)) {
+				break;
+			}
+			if (inizio == null || !prossima.isBefore(inizio)) {
+				out.add(prossima.toLocalDateTime());
+			}
+			cursore = prossima;
+		}
+		return out;
 	}
 
 	// Fuso della schedulazione, con ricaduta sul fuso del server se assente o non valido. Pubblico:

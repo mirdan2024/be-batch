@@ -7,11 +7,15 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import java.time.LocalDateTime;
+
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import it.be.batch.dto.Dtos.BatchExecutionResponse;
+import it.be.batch.dto.Dtos.CalendarioResponse;
 import it.be.batch.dto.Dtos.BatchSubscriptionRequest;
 import it.be.batch.dto.Dtos.BatchSubscriptionResponse;
 import it.be.batch.dto.Dtos.TestCredentialsRequest;
@@ -46,6 +50,26 @@ public class BatchSubscriptionController {
     @GetMapping("/{id}")
     public BatchSubscriptionResponse findById(@PathVariable Long id) {
         return service.findById(id);
+    }
+
+    /**
+     * Calendario delle partenze previste fra due istanti.
+     *
+     * <p>
+     * Comprende le schedulazioni bloccate, che sul calendario servono: sono spente adesso ma
+     * riaccenderle e' un attimo, e chi pianifica deve vedere lo slot che tornerebbero a occupare.
+     * </p>
+     *
+     * @param da   inizio finestra (ISO, es. 2026-09-01T00:00:00)
+     * @param a    fine finestra, esclusa
+     * @param idIntermediario opzionale, per restringere a un cliente
+     */
+    @GetMapping("/calendario")
+    public CalendarioResponse calendario(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime da,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime a,
+            @RequestParam(required = false) Long idIntermediario) {
+        return service.calendario(da, a, idIntermediario);
     }
 
     // Storico esecuzioni della sottoscrizione, decrescente per data di inizio e PAGINATO (pagina

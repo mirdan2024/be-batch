@@ -1,5 +1,6 @@
 package it.be.batch.service;
 
+import java.util.ArrayList;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -12,6 +13,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import it.ai.client.constants.AppConstants;
+import it.be.batch.dto.Dtos.CalendarioResponse;
+import it.be.batch.dto.Dtos.OccorrenzaCalendario;
 import it.be.batch.dto.Dtos.SftpExecutionResponse;
 import it.be.batch.dto.Dtos.SftpScheduleRequest;
 import it.be.batch.dto.Dtos.SftpScheduleResponse;
@@ -54,6 +57,77 @@ public class SftpScheduleService {
 	public List<SftpScheduleResponse> findAll() {
 		Map<Long, LocalDateTime> inCorso = esecuzioniInCorso();
 		return scheduleRepository.findAllByOrderByOrdineAscIdAsc().stream().map(s -> toResponse(s, inCorso)).toList();
+	}
+
+	/** Quante occorrenze al massimo per singola schedulazione: un cron fitto ne farebbe migliaia. */
+	private static final int MAX_OCCORRENZE_PER_SCHEDULAZIONE = 500;
+
+	/**
+	 * Il calendario dei trasferimenti previsti in una finestra.
+	 *
+	 * <p>
+	 * Stessa logica del calendario dei job batch, e non a caso: le occorrenze le calcola lo stesso
+	 * {@link CronScheduleUtil#occorrenze}, cioe' il motore con cui gli scheduler decidono davvero
+	 * quando partire. Comprende le schedulazioni <b>bloccate</b>, perche' chi pianifica deve vedere
+	 * lo slot che tornerebbero a occupare una volta riaccese.
+	 * </p>
+	 *
+	 * <p>
+	 * Un trasferimento SFTP e un job batch competono per le stesse risorse — rete, storage, database —
+	 * quindi il vero valore e' guardarli con lo stesso metro e negli stessi orari.
+	 * </p>
+	 */
+	public CalendarioResponse calendario(LocalDateTime da, LocalDateTime a, Long idIntermediario) {
+		List<OccorrenzaCalendario> occorrenze = new ArrayList<>();
+		List<String> avvisi = new ArrayList<>();
+		int senzaCron = 0;
+
+		List<SftpSchedule> schedulazioni = (idIntermediario != null)
+				? scheduleRepository.findByIdIntermediarioOrderByOrdineAscIdAsc(idIntermediario)
+				: scheduleRepository.findAllByOrderByOrdineAscIdAsc();
+
+		for (SftpSchedule s : schedulazioni) {
+			// Le cessate non esistono piu' per nessuno: non sono "bloccate", sono tolte.
+			if (s.getDataCessazione() != null) {
+				continue;
+			}
+			if (s.getCronExpression() == null || s.getCronExpression().isBlank()) {
+				// Manuale: nessuna partenza automatica, quindi nessuno slot occupato.
+				senzaCron++;
+				continue;
+			}
+			List<LocalDateTime> quando = CronScheduleUtil.occorrenze(s.getCronExpression(), s.getTimezone(),
+					s.getStartAt(), da, a, MAX_OCCORRENZE_PER_SCHEDULAZIONE);
+			if (quando.isEmpty() && !cronValido(s.getCronExpression())) {
+				avvisi.add("Espressione cron non valida su \"" + s.getNome() + "\" (id " + s.getId()
+						+ "): la schedulazione non compare sul calendario");
+				continue;
+			}
+			if (quando.size() >= MAX_OCCORRENZE_PER_SCHEDULAZIONE) {
+				avvisi.add("\"" + s.getNome() + "\" (id " + s.getId() + ") supera le "
+						+ MAX_OCCORRENZE_PER_SCHEDULAZIONE + " partenze nel periodo: ne sono mostrate solo le prime");
+			}
+			// Il dettaglio dice a colpo d'occhio da che parte va il file e verso quale host: su un
+			// calendario di trasferimenti e' l'informazione che distingue due righe con nomi simili.
+			String dettaglio = (s.getDirezione() == null ? "" : s.getDirezione())
+					+ (s.getSftpHost() == null ? "" : " \u2192 " + s.getSftpHost());
+			for (LocalDateTime q : quando) {
+				occorrenze.add(new OccorrenzaCalendario(q, s.getId(), s.getNome(), dettaglio.trim(),
+						nomeIntermediario(s.getIdIntermediario()), s.isEnabled(), s.getCronExpression(),
+						s.getTimezone()));
+			}
+		}
+		occorrenze.sort(java.util.Comparator.comparing(OccorrenzaCalendario::quando));
+		return new CalendarioResponse(da, a, occorrenze, avvisi, senzaCron);
+	}
+
+	private boolean cronValido(String cron) {
+		try {
+			org.springframework.scheduling.support.CronExpression.parse(cron);
+			return true;
+		} catch (Exception e) {
+			return false;
+		}
 	}
 
 	public List<SftpScheduleResponse> findByCustomerId(Long idIntermediario) {

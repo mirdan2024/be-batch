@@ -42,6 +42,47 @@ public class Dtos {
 	public record BatchExecutionRequest(Long id,String status, String response,Integer response_code) {
 	}
 
+	/**
+	 * Una partenza prevista sul calendario delle schedulazioni.
+	 *
+	 * <p>
+	 * {@code attiva} distingue le schedulazioni che partiranno davvero da quelle bloccate. Le bloccate
+	 * restano sul calendario di proposito: servono a chi sta pianificando, perche' una schedulazione
+	 * spenta oggi puo' essere riaccesa domani e tornerebbe a occupare quello slot.
+	 * </p>
+	 *
+	 * <p>
+	 * {@code quando} e' nel fuso della SCHEDULAZIONE, non del server: e' lo stesso istante che usa lo
+	 * scheduler, quindi il calendario mostra l'orario che accadra' davvero. Il fuso viaggia accanto,
+	 * perche' su una schedulazione in un altro fuso l'orario da solo ingannerebbe.
+	 * </p>
+	 *
+	 * <p>
+	 * {@code codice} e {@code dettaglio} sono volutamente generici: la stessa struttura serve sia ai
+	 * job batch (codice = code della definizione) sia ai trasferimenti SFTP (codice = nome della
+	 * schedulazione, dettaglio = direzione e host). Due record gemelli si somiglierebbero per una
+	 * settimana e poi divergerebbero, portandosi dietro due calendari da tenere allineati.
+	 * </p>
+	 */
+	public record OccorrenzaCalendario(LocalDateTime quando, Long idSchedulazione, String codice,
+			String dettaglio, String intermediarioNome, boolean attiva, String cronExpression,
+			String timezone) {
+	}
+
+	/**
+	 * Il calendario di una finestra.
+	 *
+	 * <p>
+	 * {@code avvisi} elenca cosa NON e' stato mostrato per intero: un cron troppo fitto oltre il tetto
+	 * di occorrenze, una schedulazione senza cron. Un calendario troncato in silenzio verrebbe letto
+	 * come completo, ed e' il modo piu' facile per pianificare sopra qualcosa che gia' c'era.
+	 * </p>
+	 */
+	public record CalendarioResponse(LocalDateTime da, LocalDateTime a,
+			java.util.List<OccorrenzaCalendario> occorrenze, java.util.List<String> avvisi,
+			int schedulazioniSenzaCron) {
+	}
+
 	// Pagina di risultati per le liste della UI: righe piu' il TOTALE, che serve alla paginazione per
 	// sapere quante pagine esistono (con la sola lista si saprebbe solo che ce n'e' un'altra).
 	public record PaginaResponse<T>(java.util.List<T> items, long total, int page, int size) {

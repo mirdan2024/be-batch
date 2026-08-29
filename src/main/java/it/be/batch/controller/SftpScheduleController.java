@@ -8,10 +8,14 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import java.time.LocalDateTime;
+
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import it.be.batch.dto.Dtos.CalendarioResponse;
 import it.be.batch.dto.Dtos.SftpExecutionResponse;
 import it.be.batch.dto.Dtos.SftpScheduleRequest;
 import it.be.batch.dto.Dtos.SftpScheduleResponse;
@@ -56,6 +60,22 @@ public class SftpScheduleController {
 	}
 
 	/** Storico trasferimenti, decrescente per data di inizio e PAGINATO (pagina 1-based). */
+	/**
+	 * Calendario dei trasferimenti previsti fra due istanti.
+	 *
+	 * <p>
+	 * Comprende le schedulazioni bloccate: sono spente adesso, ma riaccenderle e' un attimo e chi
+	 * pianifica deve vedere lo slot che tornerebbero a occupare.
+	 * </p>
+	 */
+	@GetMapping("/calendario")
+	public CalendarioResponse calendario(
+			@RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime da,
+			@RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime a,
+			@RequestParam(required = false) Long idIntermediario) {
+		return service.calendario(da, a, idIntermediario);
+	}
+
 	@GetMapping("/{id}/executions")
 	public it.be.batch.dto.Dtos.PaginaResponse<SftpExecutionResponse> executions(@PathVariable Long id,
 			@RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "10") int size) {
