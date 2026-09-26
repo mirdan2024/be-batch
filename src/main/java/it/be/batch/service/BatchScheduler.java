@@ -153,6 +153,90 @@ public class BatchScheduler {
 	}
 
 	/**
+	 * RIPRESA di un'esecuzione fallita o interrotta ("Riprendi" nello storico esecuzioni). Come "Esegui
+	 * ora" parte subito e in modo asincrono, ma chiama il resume_url della definizione: il servizio
+	 * riparte da dove si era fermato invece che da capo.
+	 * <p>
+	 * Si riprende solo l'ULTIMA esecuzione della schedulazione, e solo se e' finita male: riprendere un
+	 * lavoro vecchio quando dopo ne e' girato un altro rimetterebbe in circolo dati superati.
+	 * {@code synchronized}: due click ravvicinati non devono far partire due riprese.
+	 *
+	 * @return AVVIATA / NON_TROVATA / DEFINIZIONE_DISATTIVATA / NON_RIPRENDIBILE / ESECUZIONE_NON_TROVATA /
+	 *         ESECUZIONE_NON_ULTIMA / STATO_NON_RIPRENDIBILE / IN_CORSO
+	 */
+	public synchronized String riprendiUnaTantum(Long subscriptionId, Long idExecution) {
+		BatchSubscription subscription = subscriptionRepository.findById(subscriptionId).orElse(null);
+		if (subscription == null) {
+			return "NON_TROVATA";
+		}
+		it.be.batch.entity.BatchDefinition definizione = subscription.getBatchDefinition();
+		if (definizione == null || !definizione.isEnabled()) {
+			return "DEFINIZIONE_DISATTIVATA";
+		}
+		if (definizione.getResumeUrl() == null || definizione.getResumeUrl().isBlank()) {
+			return "NON_RIPRENDIBILE";
+		}
+		it.be.batch.entity.BatchExecution daRiprendere = executionRepository
+				.findByIdAndBatchSubscriptionId(idExecution, subscriptionId).orElse(null);
+		if (daRiprendere == null) {
+			return "ESECUZIONE_NON_TROVATA";
+		}
+		Long ultima = executionRepository.findFirstByBatchSubscriptionIdOrderByStartedAtDescIdDesc(subscriptionId)
+				.map(it.be.batch.entity.BatchExecution::getId).orElse(null);
+		if (!daRiprendere.getId().equals(ultima)) {
+			return "ESECUZIONE_NON_ULTIMA";
+		}
+		String stato = (daRiprendere.getStatus() == null) ? "" : daRiprendere.getStatus().trim().toUpperCase();
+		if (!it.ai.client.constants.AppConstants.STATUS_FAILED.equals(stato)
+				&& !BatchSubscriptionService.STATUS_INTERROTTA.equals(stato)) {
+			return "STATO_NON_RIPRENDIBILE";
+		}
+		if (inCorso.containsKey(subscriptionId) || !executionRepository.findByBatchSubscriptionIdAndStatusAndEndedAtIsNull(
+				subscriptionId, it.ai.client.constants.AppConstants.STATUS_PENDING).isEmpty()) {
+			return "IN_CORSO";
+		}
+		final Long idDaRiprendere = daRiprendere.getId();
+		final Long idOriginale = esecuzioneOriginale(daRiprendere);
+		java.util.concurrent.Future<?> f = manualExecutor.submit(() -> {
+			try {
+				String jwt = login(subscription);
+				if (jwt == null) {
+					logger.warn("Ripresa: login fallito per subscription {} (token assente)", subscription.getId());
+					return;
+				}
+				batchExecutor.riprendi(subscription, jwt, idDaRiprendere, idOriginale);
+			} catch (Exception e) {
+				logger.error("Ripresa dell'esecuzione {} fallita per subscription {}: {}", idDaRiprendere,
+						subscription.getId(), e.getMessage());
+			} finally {
+				inCorso.remove(subscription.getId());
+			}
+		});
+		inCorso.put(subscription.getId(), f);
+		logger.info("Ripresa dell'esecuzione {} (lavoro avviato dall'esecuzione {}) per subscription {}", idDaRiprendere,
+				idOriginale, subscriptionId);
+		return "AVVIATA";
+	}
+
+	/**
+	 * L'esecuzione che ha avviato il lavoro: si risale la catena delle riprese. E' il riferimento con
+	 * cui il servizio ritrova il punto raggiunto, qualunque sia l'anello su cui si preme "Riprendi".
+	 */
+	private Long esecuzioneOriginale(it.be.batch.entity.BatchExecution esecuzione) {
+		it.be.batch.entity.BatchExecution corrente = esecuzione;
+		java.util.Set<Long> visti = new java.util.HashSet<>();
+		while (corrente.getIdRipresaDi() != null && visti.add(corrente.getId())) {
+			it.be.batch.entity.BatchExecution precedente = executionRepository.findById(corrente.getIdRipresaDi())
+					.orElse(null);
+			if (precedente == null) {
+				break;
+			}
+			corrente = precedente;
+		}
+		return corrente.getId();
+	}
+
+	/**
 	 * Interrompe il thread di un'esecuzione MANUALE in corso, se presente.
 	 * <p>
 	 * Ritorna true se c'era un task da cancellare. NB: {@code cancel(true)} interrompe il thread, ma una

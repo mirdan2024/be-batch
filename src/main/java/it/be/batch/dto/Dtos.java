@@ -10,8 +10,10 @@ public class Dtos {
 			Boolean enabled) {
 	}
 
+	// riprendibile = la definizione dichiara un resume_url: lo storico esecuzioni mostra "Riprendi" sulle
+	// esecuzioni fallite o interrotte.
 	public record BatchDefinitionResponse(Long id, String code, String description, String endpointUrl,
-			HttpMethodType httpMethod, boolean enabled, String ambitoIntermediario) {
+			HttpMethodType httpMethod, boolean enabled, String ambitoIntermediario, boolean riprendibile) {
 	}
 
 	// username/password: credenziali con cui la schedulazione esegue il servizio. In update la password
@@ -93,7 +95,9 @@ public class Dtos {
 	public record BatchExecutionResponse(Long id, String status, LocalDateTime startedAt, LocalDateTime endedAt,
 			Long durationMs, Integer responseCode, String errorMessage, String responseBody,
 			// Telecronaca scritta dal servizio durante l'elaborazione (fasi, record, avanzamento, errori).
-			String log) {
+			String log,
+			// Esecuzione di cui questa e' la ripresa (null = avviata normalmente).
+			Long ripresaDi) {
 	}
 	
 	public record LoginResponse(String jwt) {};

@@ -113,6 +113,14 @@ public class BatchSubscriptionController {
         return java.util.Map.of("stato", batchScheduler.eseguiUnaTantum(id));
     }
 
+    // RIPRESA di un'esecuzione fallita o interrotta ("Riprendi" nello storico): una nuova esecuzione che
+    // chiama il resume_url della definizione, cosi' il servizio riparte da dove si era fermato. Solo
+    // l'ultima esecuzione della schedulazione. Risponde {"stato": "AVVIATA" | ...} (BatchScheduler).
+    @PostMapping("/{id}/riprendi/{idExecution}")
+    public java.util.Map<String, String> riprendi(@PathVariable Long id, @PathVariable Long idExecution) {
+        return java.util.Map.of("stato", batchScheduler.riprendiUnaTantum(id, idExecution));
+    }
+
     // NB: POST (non PATCH/DELETE). Il gateway di routing instrada solo GET/POST/PUT su /**: con PATCH/DELETE
     // la preflight CORS viene bloccata dal browser ("Failed to fetch"). Convenzione del resto dell'app.
     // Interruzione dell'elaborazione in corso: chiude la riga di batch_execution e, se la definizione

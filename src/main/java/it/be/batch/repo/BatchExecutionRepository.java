@@ -33,6 +33,12 @@ public interface BatchExecutionRepository extends JpaRepository<BatchExecution, 
 
     List<BatchExecution> findByBatchSubscriptionIdAndStatusAndEndedAtIsNull(Long subscriptionId, String status);
 
+    // Ripresa ("Riprendi" nello storico): l'esecuzione deve appartenere alla schedulazione indicata, e
+    // si riprende solo l'ultima — riprenderne una vecchia, quando dopo c'e' stato altro, non ha senso.
+    java.util.Optional<BatchExecution> findByIdAndBatchSubscriptionId(Long id, Long subscriptionId);
+
+    java.util.Optional<BatchExecution> findFirstByBatchSubscriptionIdOrderByStartedAtDescIdDesc(Long subscriptionId);
+
     // Esecuzioni PENDING piu' vecchie della soglia: col flusso "202 + callback" un servizio che non
     // richiama /finish (irraggiungibile, crashato, URL sbagliato) le lascerebbe PENDING per sempre.
     // @Transactional sul metodo: una UPDATE via @Modifying pretende una transazione attiva e il

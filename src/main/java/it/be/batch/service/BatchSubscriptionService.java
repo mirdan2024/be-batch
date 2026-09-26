@@ -397,7 +397,7 @@ public class BatchSubscriptionService {
 				? Duration.between(e.getStartedAt(), e.getEndedAt()).toMillis()
 				: null;
 		return new BatchExecutionResponse(e.getId(), e.getStatus(), e.getStartedAt(), e.getEndedAt(), durationMs,
-				e.getResponseCode(), e.getErrorMessage(), e.getResponseBody(), e.getLog());
+				e.getResponseCode(), e.getErrorMessage(), e.getResponseBody(), e.getLog(), e.getIdRipresaDi());
 	}
 
 	private LocalDateTime calculateNextRun(BatchSubscription subscription) {

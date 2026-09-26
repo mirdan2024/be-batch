@@ -54,6 +54,21 @@ public class BatchDefinition {
 		this.stopUrl = stopUrl;
 	}
 
+	// URL di RIPRESA del servizio chiamato (facoltativo): il servizio che sa ripartire da dove si era
+	// fermato lo dichiara qui, e lo storico esecuzioni mostra "Riprendi" sulle esecuzioni fallite o
+	// interrotte. be-batch lo chiama con gli header idExecution (la nuova esecuzione) e
+	// idExecutionOriginale (quella che aveva avviato il lavoro). NULL = il lavoro si rilancia da capo.
+	@Column(name = "resume_url")
+	private String resumeUrl;
+
+	public String getResumeUrl() {
+		return resumeUrl;
+	}
+
+	public void setResumeUrl(String resumeUrl) {
+		this.resumeUrl = resumeUrl;
+	}
+
 	/**
 	 * Ambito per intermediario DICHIARATO DAL JOB: e' il job a sapere se ha senso restringerlo a un
 	 * cliente, non chi compila la schedulazione. NULL o "NESSUNO" = lavora su dati comuni e il form non

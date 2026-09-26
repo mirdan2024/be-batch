@@ -27,6 +27,10 @@ public class BatchExecutor {
 
 	private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(BatchExecutor.class);
 
+	/** Stesso formato delle righe di telecronaca (BatchExecutionService.appendLog). */
+	private static final java.time.format.DateTimeFormatter FORMATO_LOG = java.time.format.DateTimeFormatter
+			.ofPattern("yyyy-MM-dd HH:mm:ss");
+
 	private final RestTemplate restTemplate;
 	private final ObjectMapper objectMapper;
 
@@ -63,6 +67,25 @@ public class BatchExecutor {
 	}
 
 	public void execute(BatchSubscription subscription, String jwt) {
+		esegui(subscription, jwt, null, null);
+	}
+
+	/**
+	 * RIPRESA di un'esecuzione fallita o interrotta ("Riprendi" nello storico esecuzioni): una nuova
+	 * esecuzione, legata a quella ripresa, che chiama il resume_url della definizione al posto
+	 * dell'endpoint. Per il resto e' un'esecuzione come le altre: telecronaca, 202, chiusura dal servizio
+	 * e, se va a buon fine, il lavoro successivo della catena.
+	 *
+	 * @param idDaRiprendere esecuzione su cui l'operatore ha premuto "Riprendi"
+	 * @param idOriginale    esecuzione che aveva avviato il lavoro (inizio della catena di riprese): e'
+	 *                       con quella che il servizio ritrova il punto a cui era arrivato
+	 */
+	public void riprendi(BatchSubscription subscription, String jwt, Long idDaRiprendere, Long idOriginale) {
+		esegui(subscription, jwt, idDaRiprendere, idOriginale);
+	}
+
+	private void esegui(BatchSubscription subscription, String jwt, Long idDaRiprendere, Long idOriginale) {
+		final boolean ripresa = (idDaRiprendere != null);
 
 		// 1) Transazione breve: registra l'esecuzione come "in corso" (PENDING). Diventerà COMPLETED o
 		// FAILED al termine della chiamata (passo 3). Se l'app viene riavviata mentre è ancora PENDING,
@@ -75,6 +98,14 @@ public class BatchExecutor {
 			// Primo battito: da qui in poi lo aggiorna ogni riga di telecronaca. Serve a far partire il
 			// conteggio del silenzio dall'avvio anche per i servizi che non scrivono nulla.
 			e.setUltimoAggiornamento(LocalDateTime.now());
+			if (ripresa) {
+				e.setIdRipresaDi(idDaRiprendere);
+				// Prima riga della telecronaca: chi apre lo storico vede subito che non e' un avvio da capo.
+				e.setLog(LocalDateTime.now().format(FORMATO_LOG) + "  Ripresa dell'esecuzione #" + idDaRiprendere
+						+ ((idOriginale != null && !idOriginale.equals(idDaRiprendere))
+								? " (lavoro avviato dall'esecuzione #" + idOriginale + ")"
+								: ""));
+			}
 			return executionRepository.save(e);
 		});
 
@@ -89,7 +120,7 @@ public class BatchExecutor {
 		// su elaborazioni lunghe il read timeout marcava FAILED un servizio che stava lavorando bene.
 		boolean presoInCarico = false;
 		try {
-			ResponseEntity<String> response = callRestBatch(execution, subscription, jwt);
+			ResponseEntity<String> response = callRestBatch(execution, subscription, jwt, ripresa, idOriginale);
 			if (response.getStatusCode().value() == 202) {
 				presoInCarico = true;
 				logger.info("Batch subscription {}: preso in carico dal servizio (202), esito atteso via callback",
@@ -161,16 +192,21 @@ public class BatchExecutor {
 	}
 
 	private ResponseEntity<String> callRestBatch(BatchExecution execution, BatchSubscription subscription,
-			String jwtToken) {
+			String jwtToken, boolean ripresa, Long idOriginale) {
 
 		BatchDefinition definition = subscription.getBatchDefinition();
 
-		String resolvedUrl = resolveUrl(definition.getEndpointUrl(), subscription.getParamsJson());
+		// La ripresa chiama l'URL che il servizio dichiara per ripartire, non quello dell'avvio.
+		String resolvedUrl = resolveUrl(ripresa ? definition.getResumeUrl() : definition.getEndpointUrl(),
+				subscription.getParamsJson());
 
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
 		headers.setBearerAuth(jwtToken);
 		headers.add("idExecution", execution.getId() + "");
+		if (ripresa && idOriginale != null) {
+			headers.add("idExecutionOriginale", idOriginale + "");
+		}
 
 		// INTERMEDIARIO della sottoscrizione, quando c'e'. Il campo e' facoltativo: lasciandolo vuoto la
 		// schedulazione non e' ristretta a un cliente e il servizio a valle lavora su TUTTI i record.

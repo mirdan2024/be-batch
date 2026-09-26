@@ -91,7 +91,8 @@ public class BatchDefinitionService {
                 entity.getEndpointUrl(),
                 entity.getHttpMethod(),
                 entity.isEnabled(),
-                entity.getAmbitoIntermediario()
+                entity.getAmbitoIntermediario(),
+                entity.getResumeUrl() != null && !entity.getResumeUrl().isBlank()
         );
     }
 }

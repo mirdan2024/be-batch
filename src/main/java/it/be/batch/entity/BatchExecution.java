@@ -59,6 +59,21 @@ public class BatchExecution {
 	@Column(name = "log", columnDefinition = "LONGTEXT")
 	private String log;
 
+	/**
+	 * Esecuzione di cui questa e' la RIPRESA ("Riprendi" nello storico). Seguendo la catena all'indietro
+	 * si arriva all'esecuzione che ha avviato il lavoro: e' con quella che il servizio lo ritrova.
+	 */
+	@Column(name = "id_ripresa_di")
+	private Long idRipresaDi;
+
+	public Long getIdRipresaDi() {
+		return idRipresaDi;
+	}
+
+	public void setIdRipresaDi(Long idRipresaDi) {
+		this.idRipresaDi = idRipresaDi;
+	}
+
 	public String getLog() {
 		return log;
 	}
