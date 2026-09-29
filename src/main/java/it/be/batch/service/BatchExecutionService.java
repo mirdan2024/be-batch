@@ -26,22 +26,22 @@ public class BatchExecutionService {
 	/**
 	 * Aggiunge una riga alla telecronaca dell'esecuzione, con timestamp. Append: le righe precedenti
 	 * restano, cosi' si legge tutto il percorso dell'elaborazione dall'inizio alla fine.
+	 * <p>
+	 * Direttamente in SQL, in coda a quello che c'e' in quel momento: rileggere la riga e risalvarla per
+	 * intero riscriveva anche il codice HTTP, lo stato e la fine con i valori letti un attimo prima, e fra
+	 * due scritture vicine vinceva l'ultima (vedi BatchExecutionRepository).
 	 */
 	@org.springframework.transaction.annotation.Transactional
 	public void appendLog(Long id, String message) {
 		if (message == null || message.isBlank()) {
 			return;
 		}
-		repository.findById(id).ifPresent(e -> {
-			String riga = java.time.LocalDateTime.now()
-					.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")) + "  " + message;
-			String precedente = e.getLog();
-			e.setLog((precedente == null || precedente.isBlank()) ? riga : precedente + System.lineSeparator() + riga);
-			// Battito del servizio: e' su questo che la rete di sicurezza decide se l'esecuzione e' morta.
-			// Finche' arrivano righe di telecronaca, sta lavorando — per quanto a lungo duri.
-			e.setUltimoAggiornamento(java.time.LocalDateTime.now());
-			repository.save(e);
-		});
+		java.time.LocalDateTime adesso = java.time.LocalDateTime.now();
+		String riga = adesso.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")) + "  "
+				+ message;
+		// Battito del servizio: e' su questo che la rete di sicurezza decide se l'esecuzione e' morta.
+		// Finche' arrivano righe di telecronaca, sta lavorando — per quanto a lungo duri.
+		repository.aggiungiRigaLog(id, riga, System.lineSeparator(), adesso);
 	}
 
 	/**
@@ -52,19 +52,13 @@ public class BatchExecutionService {
 	@org.springframework.transaction.annotation.Transactional
 	public void finish(Long id, String status, String message, String responseBody) {
 		final String statoFinale = (status == null || status.isBlank()) ? "COMPLETED" : status.trim().toUpperCase();
-		it.be.batch.entity.BatchSubscription subscription = repository.findById(id).map(e -> {
-			e.setStatus(statoFinale);
-			e.setEndedAt(java.time.LocalDateTime.now());
-			if (message != null && !message.isBlank()) {
-				e.setErrorMessage(message);
-			}
-			if (responseBody != null && !responseBody.isBlank()) {
-				e.setResponseBody(responseBody);
-			}
-			repository.save(e);
-			// Letto DENTRO la transazione: la relazione e' LAZY e fuori non sarebbe piu' raggiungibile.
-			return e.getBatchSubscription();
-		}).orElse(null);
+		// Solo stato, fine, messaggio e corpo: il codice HTTP e la telecronaca non si toccano.
+		repository.chiudi(id, statoFinale, java.time.LocalDateTime.now(),
+				(message != null && !message.isBlank()) ? message : null,
+				(responseBody != null && !responseBody.isBlank()) ? responseBody : null);
+		// Letta DENTRO la transazione: la relazione e' LAZY e fuori non sarebbe piu' raggiungibile.
+		it.be.batch.entity.BatchSubscription subscription = repository.findById(id)
+				.map(BatchExecution::getBatchSubscription).orElse(null);
 
 		appendLog(id, "Esecuzione chiusa dal servizio con stato " + status
 				+ (message != null && !message.isBlank() ? " - " + message : ""));
@@ -82,15 +76,10 @@ public class BatchExecutionService {
 
 	@Transactional
 	public void update(Long id, BatchExecutionRequest request) {
-
-		BatchExecution entity = repository.findById(id)
-				.orElseThrow(() -> new RuntimeException("Esecuzione batch non trovata: " + id));
-
-		entity.setResponseBody(request.response());
-		entity.setStatus(request.status());
-		entity.setResponseCode(request.response_code());
-
-		repository.save(entity);
+		// Stesse colonne di prima, senza risalvare la riga intera (telecronaca compresa).
+		if (repository.aggiornaEsito(id, request.response(), request.status(), request.response_code()) == 0) {
+			throw new RuntimeException("Esecuzione batch non trovata: " + id);
+		}
 	}
 
 }

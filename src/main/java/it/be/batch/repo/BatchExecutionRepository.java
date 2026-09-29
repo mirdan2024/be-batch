@@ -64,4 +64,66 @@ public interface BatchExecutionRepository extends JpaRepository<BatchExecution, 
             + "where e.status = :from and e.endedAt is null")
     int closeStaleExecutions(@Param("from") String from, @Param("to") String to,
             @Param("now") LocalDateTime now, @Param("msg") String msg);
+
+    // ---------------------------------------------------------------------------------------------
+    // Scritture MIRATE sull'esecuzione. Alla stessa riga scrivono, anche insieme, l'esecutore (esito della
+    // chiamata HTTP), il servizio a valle (telecronaca e chiusura) e l'amministratore (Stop). Leggere la
+    // riga, cambiarla e risalvarla per intero faceva vincere l'ultimo: il 202 salvato dall'esecutore
+    // spariva sotto una riga di telecronaca salvata un attimo dopo con la copia letta prima (HTTP "-"
+    // nello storico), e una chiusura poteva riportare indietro la telecronaca. Ognuna di queste scrive
+    // solo le colonne che le spettano.
+    // ---------------------------------------------------------------------------------------------
+
+    /** Una riga in coda alla telecronaca, con il battito (vedi closeStalePending). */
+    @Modifying
+    @Transactional
+    @Query("update BatchExecution e set e.log = case when e.log is null or e.log = '' then :riga"
+            + " else concat(e.log, :acapo, :riga) end, e.ultimoAggiornamento = :adesso where e.id = :id")
+    int aggiungiRigaLog(@Param("id") Long id, @Param("riga") String riga, @Param("acapo") String acapo,
+            @Param("adesso") LocalDateTime adesso);
+
+    /** Servizio che ha preso in carico (202): solo il codice, stato e chiusura li dichiarera' lui. */
+    @Modifying
+    @Transactional
+    @Query("update BatchExecution e set e.responseCode = :codice where e.id = :id")
+    int registraCodice(@Param("id") Long id, @Param("codice") Integer codice);
+
+    /**
+     * Esito di una chiamata sincrona. Codice e corpo sempre; stato, errore e fine solo se l'esecuzione non
+     * e' gia' stata chiusa dal servizio, che vince sull'esito dedotto dalla risposta HTTP. endedAt per
+     * ULTIMO: MySQL valuta le assegnazioni in ordine, e le due precedenti devono vederlo com'era.
+     */
+    @Modifying
+    @Transactional
+    @Query("update BatchExecution e set e.responseCode = :codice, e.responseBody = :corpo,"
+            + " e.status = case when e.endedAt is null then :stato else e.status end,"
+            + " e.errorMessage = case when e.endedAt is null then :errore else e.errorMessage end,"
+            + " e.endedAt = coalesce(e.endedAt, :fine) where e.id = :id")
+    int registraEsito(@Param("id") Long id, @Param("codice") Integer codice, @Param("corpo") String corpo,
+            @Param("stato") String stato, @Param("errore") String errore, @Param("fine") LocalDateTime fine);
+
+    /** Chiusura dichiarata dal servizio (/finish): messaggio e corpo solo se ci sono. */
+    @Modifying
+    @Transactional
+    @Query("update BatchExecution e set e.status = :stato, e.endedAt = :fine,"
+            + " e.errorMessage = coalesce(:messaggio, e.errorMessage),"
+            + " e.responseBody = coalesce(:corpo, e.responseBody) where e.id = :id")
+    int chiudi(@Param("id") Long id, @Param("stato") String stato, @Param("fine") LocalDateTime fine,
+            @Param("messaggio") String messaggio, @Param("corpo") String corpo);
+
+    /** Stop dell'amministratore: solo se l'esecuzione e' ancora aperta (non si riscrive un esito gia' dato). */
+    @Modifying
+    @Transactional
+    @Query("update BatchExecution e set e.status = :stato, e.endedAt = :fine, e.errorMessage = :messaggio"
+            + " where e.id = :id and e.endedAt is null")
+    int chiudiSeAperta(@Param("id") Long id, @Param("stato") String stato, @Param("fine") LocalDateTime fine,
+            @Param("messaggio") String messaggio);
+
+    /** Aggiornamento generico dell'esito (PUT /batch-executions/{id}): stato, codice e corpo. */
+    @Modifying
+    @Transactional
+    @Query("update BatchExecution e set e.responseBody = :corpo, e.status = :stato, e.responseCode = :codice"
+            + " where e.id = :id")
+    int aggiornaEsito(@Param("id") Long id, @Param("corpo") String corpo, @Param("stato") String stato,
+            @Param("codice") Integer codice);
 }

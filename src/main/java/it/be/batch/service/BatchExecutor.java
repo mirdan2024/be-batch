@@ -160,16 +160,15 @@ public class BatchExecutor {
 			LocalDateTime now = LocalDateTime.now();
 			// Con 202 l'esecuzione resta PENDING: la chiudera' il servizio. Si aggiorna solo la
 			// riprogrammazione della sottoscrizione, che non dipende dall'esito.
+			// Scritture MIRATE, non save(execution): quell'oggetto e' la copia letta all'avvio, e intanto il
+			// servizio ha gia' scritto telecronaca (e magari chiuso l'esecuzione). Risalvarlo per intero
+			// cancellava la telecronaca e ne riportava lo stato indietro.
 			if (!fPresoInCarico) {
-				execution.setStatus(fStatus);
-				execution.setResponseCode(fResponseCode);
-				execution.setResponseBody(fResponseBody);
-				execution.setErrorMessage(fErrorMessage);
-				execution.setEndedAt(now);
+				executionRepository.registraEsito(execution.getId(), fResponseCode, fResponseBody, fStatus,
+						fErrorMessage, now);
 			} else {
-				execution.setResponseCode(202);
+				executionRepository.registraCodice(execution.getId(), 202);
 			}
-			executionRepository.save(execution);
 
 			subscription.setLastRunAt(now);
 			subscription.setNextRunAt(calculateNextRun(subscription));

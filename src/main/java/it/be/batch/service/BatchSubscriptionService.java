@@ -495,10 +495,10 @@ public class BatchSubscriptionService {
 				.findByBatchSubscriptionIdAndStatusAndEndedAtIsNull(subscriptionId, AppConstants.STATUS_PENDING);
 		LocalDateTime now = LocalDateTime.now();
 		for (BatchExecution e : inCorso) {
-			e.setStatus(STATUS_INTERROTTA);
-			e.setEndedAt(now);
-			e.setErrorMessage("Interrotta manualmente dall'amministratore");
-			executionRepository.save(e);
+			// Scrittura mirata e solo se ancora aperta: il servizio sta scrivendo la telecronaca proprio
+			// adesso, e risalvare la riga letta un attimo fa la riporterebbe indietro.
+			executionRepository.chiudiSeAperta(e.getId(), STATUS_INTERROTTA, now,
+					"Interrotta manualmente dall'amministratore");
 		}
 		if (!inCorso.isEmpty()) {
 			entity.setLastRunAt(now);
