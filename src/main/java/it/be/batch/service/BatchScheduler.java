@@ -1,6 +1,7 @@
 package it.be.batch.service;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -20,6 +21,7 @@ import it.be.batch.dto.Dtos.LoginResponse;
 import it.be.batch.dto.LoginPojo;
 import it.be.batch.entity.BatchSubscription;
 import it.be.batch.repo.BatchSubscriptionRepository;
+import it.common.base.util.LogUtils;
 
 @Component
 public class BatchScheduler {
@@ -55,7 +57,7 @@ public class BatchScheduler {
 	private final it.be.batch.repo.BatchExecutionRepository executionRepository;
 
 	public BatchScheduler(BatchSubscriptionRepository subscriptionRepository, BatchExecutor batchExecutor,
-			@Qualifier("RestTimeout") RestTemplate restTemplate, CredentialCipher credentialCipher,
+			@Qualifier("restTimeout") RestTemplate restTemplate, CredentialCipher credentialCipher,
 			it.be.batch.repo.BatchExecutionRepository executionRepository) {
 		super();
 		this.executionRepository = executionRepository;
@@ -73,10 +75,10 @@ public class BatchScheduler {
 	 */
 	@Scheduled(fixedDelayString = "${batch.execution.stale-check-ms:600000}")
 	public void chiudiEsecuzioniPiantate() {
-		java.time.LocalDateTime limite = java.time.LocalDateTime.now().minusHours(staleTimeoutHours);
+		java.time.LocalDateTime limite = java.time.LocalDateTime.now(ZoneId.systemDefault()).minusHours(staleTimeoutHours);
 		int chiuse = executionRepository.closeStalePending(it.ai.client.constants.AppConstants.STATUS_PENDING,
 				it.ai.client.constants.AppConstants.STATUS_FAILED,
-				java.time.LocalDateTime.now(), limite,
+				java.time.LocalDateTime.now(ZoneId.systemDefault()), limite,
 				"Il servizio non da' segni di vita da oltre " + staleTimeoutHours
 						+ " ore (nessuna riga di avanzamento): esecuzione chiusa d'ufficio. NB: conta il"
 						+ " silenzio, non la durata — un'elaborazione lunga che continua a scrivere non"
@@ -89,30 +91,35 @@ public class BatchScheduler {
 
 	@Scheduled(fixedDelayString = "${batch.scheduler.fixed-delay-ms}")
 	public void dispatch() {
-		LocalDateTime now = LocalDateTime.now();
+		LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
 
 		List<BatchSubscription> dueBatches = subscriptionRepository.findByEnabledTrueAndNextRunAtLessThanEqual(now);
 		for (BatchSubscription subscription : dueBatches) {
-			// La definizione può essere stata disattivata dopo la sottoscrizione: in tal caso si salta,
-			// senza autenticarsi né chiamare l'endpoint.
-			if (subscription.getBatchDefinition() == null || !subscription.getBatchDefinition().isEnabled()) {
-				logger.info("Batch subscription {} saltata: definizione assente o disattivata", subscription.getId());
-				continue;
+			eseguiSchedulata(subscription);
+		}
+	}
+
+	/** Un giro del dispatch: login e chiamata per una sottoscrizione giunta a scadenza. Non solleva. */
+	private void eseguiSchedulata(BatchSubscription subscription) {
+		// La definizione può essere stata disattivata dopo la sottoscrizione: in tal caso si salta,
+		// senza autenticarsi né chiamare l'endpoint.
+		if (subscription.getBatchDefinition() == null || !subscription.getBatchDefinition().isEnabled()) {
+			logger.info("Batch subscription {} saltata: definizione assente o disattivata", subscription.getId());
+			return;
+		}
+		try {
+			String jwt = login(subscription);
+			if (jwt == null) {
+				logger.warn("Login batch non riuscito per subscription {}: token assente", subscription.getId());
+				return;
 			}
-			try {
-				String jwt = login(subscription);
-				if (jwt == null) {
-					logger.warn("Login batch non riuscito per subscription {}: token assente", subscription.getId());
-					continue;
-				}
-				batchExecutor.execute(subscription, jwt);
-			} catch (RestClientException rce) {
-				logger.error("Errore nella chiamata di login batch per subscription {}: {}", subscription.getId(),
-						rce.getMessage());
-			} catch (Exception e) {
-				logger.error("Errore imprevisto nell'esecuzione batch per subscription {}: {}", subscription.getId(),
-						e.getMessage(), e);
-			}
+			batchExecutor.execute(subscription, jwt);
+		} catch (RestClientException rce) {
+			logger.error("Errore nella chiamata di login batch per subscription {}: {}", subscription.getId(),
+					LogUtils.motivo(rce));
+		} catch (Exception e) {
+			logger.error("Errore imprevisto nell'esecuzione batch per subscription {}: {}", subscription.getId(),
+					e.getMessage(), e);
 		}
 	}
 
@@ -143,7 +150,7 @@ public class BatchScheduler {
 				batchExecutor.execute(subscription, jwt);
 			} catch (Exception e) {
 				logger.error("Esecuzione una tantum fallita per subscription {}: {}", subscription.getId(),
-						e.getMessage());
+						LogUtils.motivo(e));
 			} finally {
 				inCorso.remove(subscription.getId());
 			}
@@ -169,18 +176,45 @@ public class BatchScheduler {
 		if (subscription == null) {
 			return "NON_TROVATA";
 		}
-		it.be.batch.entity.BatchDefinition definizione = subscription.getBatchDefinition();
-		if (definizione == null || !definizione.isEnabled()) {
-			return "DEFINIZIONE_DISATTIVATA";
-		}
-		if (definizione.getResumeUrl() == null || definizione.getResumeUrl().isBlank()) {
-			return "NON_RIPRENDIBILE";
+		String definizioneNonValida = verificaDefinizioneRiprendibile(subscription.getBatchDefinition());
+		if (definizioneNonValida != null) {
+			return definizioneNonValida;
 		}
 		it.be.batch.entity.BatchExecution daRiprendere = executionRepository
 				.findByIdAndBatchSubscriptionId(idExecution, subscriptionId).orElse(null);
 		if (daRiprendere == null) {
 			return "ESECUZIONE_NON_TROVATA";
 		}
+		String esecuzioneNonValida = verificaEsecuzioneRiprendibile(subscriptionId, daRiprendere);
+		if (esecuzioneNonValida != null) {
+			return esecuzioneNonValida;
+		}
+		final Long idDaRiprendere = daRiprendere.getId();
+		final Long idOriginale = esecuzioneOriginale(daRiprendere);
+		java.util.concurrent.Future<?> f = manualExecutor
+				.submit(() -> lanciaRipresa(subscription, idDaRiprendere, idOriginale));
+		inCorso.put(subscription.getId(), f);
+		logger.info("Ripresa dell'esecuzione {} (lavoro avviato dall'esecuzione {}) per subscription {}", idDaRiprendere,
+				idOriginale, subscriptionId);
+		return "AVVIATA";
+	}
+
+	/** Il motivo per cui la definizione non consente la ripresa, o null se la consente. */
+	private static String verificaDefinizioneRiprendibile(it.be.batch.entity.BatchDefinition definizione) {
+		if (definizione == null || !definizione.isEnabled()) {
+			return "DEFINIZIONE_DISATTIVATA";
+		}
+		if (definizione.getResumeUrl() == null || definizione.getResumeUrl().isBlank()) {
+			return "NON_RIPRENDIBILE";
+		}
+		return null;
+	}
+
+	/**
+	 * Il motivo per cui l'esecuzione non si puo' riprendere (non e' l'ultima, non e' finita male, c'e'
+	 * gia' qualcosa in corso), o null se si puo'.
+	 */
+	private String verificaEsecuzioneRiprendibile(Long subscriptionId, it.be.batch.entity.BatchExecution daRiprendere) {
 		Long ultima = executionRepository.findFirstByBatchSubscriptionIdOrderByStartedAtDescIdDesc(subscriptionId)
 				.map(it.be.batch.entity.BatchExecution::getId).orElse(null);
 		if (!daRiprendere.getId().equals(ultima)) {
@@ -195,27 +229,24 @@ public class BatchScheduler {
 				subscriptionId, it.ai.client.constants.AppConstants.STATUS_PENDING).isEmpty()) {
 			return "IN_CORSO";
 		}
-		final Long idDaRiprendere = daRiprendere.getId();
-		final Long idOriginale = esecuzioneOriginale(daRiprendere);
-		java.util.concurrent.Future<?> f = manualExecutor.submit(() -> {
-			try {
-				String jwt = login(subscription);
-				if (jwt == null) {
-					logger.warn("Ripresa: login fallito per subscription {} (token assente)", subscription.getId());
-					return;
-				}
-				batchExecutor.riprendi(subscription, jwt, idDaRiprendere, idOriginale);
-			} catch (Exception e) {
-				logger.error("Ripresa dell'esecuzione {} fallita per subscription {}: {}", idDaRiprendere,
-						subscription.getId(), e.getMessage());
-			} finally {
-				inCorso.remove(subscription.getId());
+		return null;
+	}
+
+	/** Il lavoro asincrono della ripresa: login e chiamata al resume_url. Non solleva. */
+	private void lanciaRipresa(BatchSubscription subscription, Long idDaRiprendere, Long idOriginale) {
+		try {
+			String jwt = login(subscription);
+			if (jwt == null) {
+				logger.warn("Ripresa: login fallito per subscription {} (token assente)", subscription.getId());
+				return;
 			}
-		});
-		inCorso.put(subscription.getId(), f);
-		logger.info("Ripresa dell'esecuzione {} (lavoro avviato dall'esecuzione {}) per subscription {}", idDaRiprendere,
-				idOriginale, subscriptionId);
-		return "AVVIATA";
+			batchExecutor.riprendi(subscription, jwt, idDaRiprendere, idOriginale);
+		} catch (Exception e) {
+			logger.error("Ripresa dell'esecuzione {} fallita per subscription {}: {}", idDaRiprendere,
+					subscription.getId(), LogUtils.motivo(e));
+		} finally {
+			inCorso.remove(subscription.getId());
+		}
 	}
 
 	/**

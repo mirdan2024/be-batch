@@ -2,7 +2,6 @@ package it.be.batch.controller;
 
 import java.util.List;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -15,8 +14,11 @@ import it.common.base.bean.RestServiceMetadata;
 @RequestMapping
 public class RestServiceRegistryController {
 
-	@Autowired
-    private  RestServiceRegistryService service;
+    private final RestServiceRegistryService service;
+
+    public RestServiceRegistryController(RestServiceRegistryService service) {
+        this.service = service;
+    }
 
     @PostMapping("/register")
     public void register(

@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
@@ -17,7 +18,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -31,6 +31,7 @@ import it.be.batch.repo.SftpExecutionRepository;
 import it.be.batch.repo.SftpScheduleRepository;
 import it.common.base.batch.BatchJobControl;
 import it.common.base.batch.BatchJobRegistry;
+import it.common.base.util.LogUtils;
 import net.schmizz.sshj.SSHClient;
 import net.schmizz.sshj.sftp.RemoteResourceInfo;
 import net.schmizz.sshj.sftp.SFTPClient;
@@ -62,6 +63,15 @@ public class SftpTransferService {
 
 	private static final DateTimeFormatter FMT_LOG = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 	private static final DateTimeFormatter FMT_PREFISSO = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+
+	private static final String HEADER_TOKEN_INTERNO = "X-INTERNAL-TOKEN";
+	private static final String PARAM_FILE_NAME = "fileName";
+	/** Gli esiti in testa alle righe della telecronaca, incolonnati col nome del file che segue. */
+	private static final String ESITO_OK = "OK      ";
+	private static final String ESITO_KO = "KO      ";
+	/** Fra il file trasferito e la sua destinazione, nelle righe della telecronaca. */
+	private static final String VERSO = "   a ";
+	private static final String INTERROTTO_DA_ADMIN = "Trasferimento interrotto dall'amministratore";
 
 	/** Nome del job nel registro condiviso: uno per schedulazione, cosi' se ne ferma una sola. */
 	public static String jobName(Long scheduleId) {
@@ -149,27 +159,23 @@ public class SftpTransferService {
 	 * {@code SimpleClientHttpRequestFactory} il corpo della richiesta viene bufferizzato in memoria:
 	 * su file da GB significa OutOfMemory. {@code HttpClient} del JDK con
 	 * {@code BodyPublishers.ofFile} / {@code BodyHandlers.ofFile} scrive e legge direttamente da disco.
-	 * Thread-safe, creato una volta sola.
+	 * Thread-safe, creato una volta sola (al primo uso: il timeout di connessione arriva dalle property).
 	 */
-	private volatile java.net.http.HttpClient httpFile;
+	private java.net.http.HttpClient httpFile;
 
-	private java.net.http.HttpClient httpFile() {
+	private synchronized java.net.http.HttpClient httpFile() {
 		if (httpFile == null) {
-			synchronized (this) {
-				if (httpFile == null) {
-					httpFile = java.net.http.HttpClient.newBuilder()
-							.connectTimeout(java.time.Duration.ofMillis(connectTimeoutMs))
-							.followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
-							.build();
-				}
-			}
+			httpFile = java.net.http.HttpClient.newBuilder()
+					.connectTimeout(java.time.Duration.ofMillis(connectTimeoutMs))
+					.followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+					.build();
 		}
 		return httpFile;
 	}
 
 	public SftpTransferService(SftpScheduleRepository scheduleRepository, SftpExecutionRepository executionRepository,
 			CredentialCipher credentialCipher, BatchJobRegistry batchJobRegistry,
-			@Qualifier("RestTimeout") RestTemplate restTemplate) {
+			@Qualifier("restTimeout") RestTemplate restTemplate) {
 		super();
 		this.scheduleRepository = scheduleRepository;
 		this.executionRepository = executionRepository;
@@ -205,7 +211,7 @@ public class SftpTransferService {
 		SftpExecution execution = new SftpExecution();
 		execution.setSftpSchedule(schedule);
 		execution.setStatus(AppConstants.STATUS_PENDING);
-		execution.setStartedAt(LocalDateTime.now());
+		execution.setStartedAt(LocalDateTime.now(ZoneId.systemDefault()));
 		execution.setFileTrasferiti(0);
 		execution.setByteTrasferiti(0L);
 		execution.setLog("");
@@ -228,31 +234,22 @@ public class SftpTransferService {
 				sftpVersoStorage(schedule, idExecution, ctl, esito);
 			}
 
-			String stato = ctl.isStopRequested() ? STATUS_INTERROTTA
-					: (esito.errori > 0 ? AppConstants.STATUS_FAILED : AppConstants.STATUS_COMPLETED);
-			String messaggio = null;
-			if (esito.errori > 0) {
-				messaggio = esito.errori + " file non trasferiti: " + esito.primoErrore;
-			} else if (esito.avvisi > 0) {
-				// Trasferimento riuscito ma politica post-trasferimento fallita: l'esecuzione resta
-				// COMPLETED (i file sono arrivati), pero' il motivo va scritto, altrimenti la colonna
-				// "Motivo" resta vuota e sembra tutto a posto mentre i file di origine sono ancora li'.
-				messaggio = esito.avvisi + " file trasferiti ma non archiviati: " + esito.primoAvviso;
-			}
-			if (ctl.isStopRequested()) {
-				messaggio = "Trasferimento interrotto dall'amministratore";
-			}
+			boolean fermato = ctl.isStopRequested();
+			String stato = statoFinale(fermato, esito);
+			String messaggio = motivoFinale(fermato, esito);
 			chiudi(idExecution, stato, messaggio, esito);
 			log(idExecution, "Fine: " + esito.file + " file trasferiti, " + formatByte(esito.byteTotali) + ", "
 					+ esito.errori + " errori, " + esito.avvisi + " avvisi, durata "
 					+ formatDurata(System.currentTimeMillis() - inizioCorsa) + " — esito " + stato);
 		} catch (Exception e) {
-			logger.error("Trasferimento SFTP {} fallito: {}", scheduleId, e.getMessage(), e);
-			log(idExecution, "ERRORE: " + e.getClass().getSimpleName() + " — " + e.getMessage());
+			logger.error("Trasferimento SFTP {} fallito: {}", scheduleId, LogUtils.motivo(e), LogUtils.perLog(e));
+			// Come ogni altra riga di errore di questa telecronaca: messaggioErrore, non il messaggio dell'eccezione,
+			// che di una risposta di errore dello storage ormai dice solo lo stato.
+			log(idExecution, "ERRORE: " + e.getClass().getSimpleName() + " — " + messaggioErrore(e));
 			// Se nel frattempo e' stato chiesto lo stop, l'errore e' una conseguenza dell'interruzione:
 			// registrarlo come FAILED farebbe sembrare rotto un job che invece e' stato fermato a mano.
 			if (ctl.isStopRequested()) {
-				chiudi(idExecution, STATUS_INTERROTTA, "Trasferimento interrotto dall'amministratore", esito);
+				chiudi(idExecution, STATUS_INTERROTTA, INTERROTTO_DA_ADMIN, esito);
 			} else {
 				chiudi(idExecution, AppConstants.STATUS_FAILED, messaggioErrore(e), esito);
 			}
@@ -263,8 +260,32 @@ public class SftpTransferService {
 		return idExecution;
 	}
 
+	private static String statoFinale(boolean fermato, Esito esito) {
+		if (fermato) {
+			return STATUS_INTERROTTA;
+		}
+		return (esito.errori > 0) ? AppConstants.STATUS_FAILED : AppConstants.STATUS_COMPLETED;
+	}
+
+	/** Il "Motivo" dell'esecuzione: {@code null} quando e' andato tutto liscio. */
+	private static String motivoFinale(boolean fermato, Esito esito) {
+		if (fermato) {
+			return INTERROTTO_DA_ADMIN;
+		}
+		if (esito.errori > 0) {
+			return esito.errori + " file non trasferiti: " + esito.primoErrore;
+		}
+		if (esito.avvisi > 0) {
+			// Trasferimento riuscito ma politica post-trasferimento fallita: l'esecuzione resta
+			// COMPLETED (i file sono arrivati), pero' il motivo va scritto, altrimenti la colonna
+			// "Motivo" resta vuota e sembra tutto a posto mentre i file di origine sono ancora li'.
+			return esito.avvisi + " file trasferiti ma non archiviati: " + esito.primoAvviso;
+		}
+		return null;
+	}
+
 	/** Contatori dell'esecuzione (mutabili, passati alle due direzioni). */
-	private static class Esito {
+	static class Esito {
 		int file;
 		int errori;
 		long byteTotali;
@@ -292,6 +313,15 @@ public class SftpTransferService {
 		}
 	}
 
+	/** Il file in lavorazione: l'esecuzione a cui appartiene, a che punto dell'elenco e' e quando e' partito. */
+	record Passo(Long idExecution, Esito esito, int progressivo, int totale, long inizio) {
+
+		/** Testa delle righe di telecronaca del file, es. {@code [3/12] }. */
+		String prefisso() {
+			return "[" + progressivo + "/" + totale + "] ";
+		}
+	}
+
 	// ------------------------------------------------------------------------------------------------
 	// Direzione 1: SFTP -> storage
 	// ------------------------------------------------------------------------------------------------
@@ -312,73 +342,75 @@ public class SftpTransferService {
 			log(idExecution, "Cartella di DESTINAZIONE : " + cartellaStorage(s));
 
 			List<RemoteResourceInfo> remoti = sftp.ls(s.getSftpPath());
-			List<RemoteResourceInfo> daPrendere = new ArrayList<>();
-			for (RemoteResourceInfo r : remoti) {
-				if (r.isRegularFile() && (filtro == null || filtro.matcher(r.getName()).matches())) {
-					daPrendere.add(r);
-				}
-			}
+			List<String> daPrendere = remoti.stream()
+					.filter(r -> r.isRegularFile() && (filtro == null || filtro.matcher(r.getName()).matches()))
+					.map(RemoteResourceInfo::getName).toList();
 			log(idExecution, "File da trasferire: " + daPrendere.size() + " (su " + remoti.size()
 					+ " elementi in cartella)");
 
 			int progressivo = 0;
-			for (RemoteResourceInfo r : daPrendere) {
+			for (String nome : daPrendere) {
 				if (ctl.isStopRequested()) {
 					log(idExecution, "STOP richiesto: trasferimento interrotto dopo " + esito.file + " file");
 					return;
 				}
-				String nome = r.getName();
-				String origine = percorsoRemoto(s.getSftpPath(), nome);
 				progressivo++;
-				Path locale = tempDir.resolve(nomeTemporaneo(nome));
-				long inizio = System.currentTimeMillis();
-				// Riga di INIZIO: con l'orario in testa dice a che ora e' partito quel singolo file. Su
-				// file grandi e' l'unico modo di distinguere "fermo" da "sta ancora copiando".
-				log(idExecution, "[" + progressivo + "/" + daPrendere.size() + "] INIZIO  " + nome
-						+ "   da " + cartellaSftp(s) + "/" + nome);
-				try {
-					// get(String, String): API stabile di sshj, scarica sul filesystem locale.
-					sftp.get(origine, locale.toString());
-
-					if (estraiZip && isZip(nome)) {
-						// Lo ZIP e' solo un contenitore di trasporto: su storage vanno i file che contiene,
-						// non l'archivio. Lo zip scaricato resta nella cartella temporanea e viene buttato
-						// nel finally; sul server remoto vale la politica post-trasferimento configurata.
-						estraiZipSuStorage(s, locale, nome, idExecution, esito, progressivo, daPrendere.size(),
-								inizio);
-					} else {
-						// Il file resta su disco: si carica in streaming, senza leggerlo in memoria.
-						// Con un file da qualche GB un readAllBytes farebbe cadere il servizio (e byte[]
-						// non puo' comunque superare i 2 GB).
-						long dimensione = Files.size(locale);
-						if (dimensione == 0) {
-							// Non e' un errore (capita con i file segnaposto e con gli export a zero record),
-							// ma va detto: altrimenti a valle si cerca un contenuto che non c'e' mai stato.
-							log(idExecution, "         ATTENZIONE: il file di origine e' VUOTO (0 byte)");
-						}
-
-						caricaSuStorage(s, nome, locale);
-
-						esito.file++;
-						esito.byteTotali += dimensione;
-						log(idExecution, "[" + progressivo + "/" + daPrendere.size() + "] OK      " + nome + "   "
-								+ formatByte(dimensione) + " in "
-								+ formatDurata(System.currentTimeMillis() - inizio)
-								+ "   a " + cartellaStorage(s) + "/" + nome);
-					}
-
-					archiviaRemoto(sftp, s, nome, idExecution, esito);
-				} catch (Exception e) {
-					esito.errore(nome + ": " + messaggioErrore(e));
-					log(idExecution, "[" + progressivo + "/" + daPrendere.size() + "] KO      " + nome + "   "
-							+ origine + " — " + messaggioErrore(e));
-				} finally {
-					Files.deleteIfExists(locale);
-				}
+				prelevaFile(sftp, s, nome, tempDir,
+						new Passo(idExecution, esito, progressivo, daPrendere.size(), System.currentTimeMillis()));
 			}
 		} finally {
 			pulisci(tempDir);
 		}
+	}
+
+	/** Preleva UN file dal server SFTP e lo porta su storage; di uno ZIP porta i file che contiene. */
+	private void prelevaFile(SFTPClient sftp, SftpSchedule s, String nome, Path tempDir, Passo p) throws IOException {
+		String origine = percorsoRemoto(s.getSftpPath(), nome);
+		Path locale = tempDir.resolve(nomeTemporaneo(nome));
+		// Riga di INIZIO: con l'orario in testa dice a che ora e' partito quel singolo file. Su
+		// file grandi e' l'unico modo di distinguere "fermo" da "sta ancora copiando".
+		log(p.idExecution(), p.prefisso() + "INIZIO  " + nome + "   da " + cartellaSftp(s) + "/" + nome);
+		try {
+			// get(String, String): API stabile di sshj, scarica sul filesystem locale.
+			sftp.get(origine, locale.toString());
+
+			if (estraiZip && isZip(nome)) {
+				// Lo ZIP e' solo un contenitore di trasporto: su storage vanno i file che contiene,
+				// non l'archivio. Lo zip scaricato resta nella cartella temporanea e viene buttato
+				// nel finally; sul server remoto vale la politica post-trasferimento configurata.
+				estraiZipSuStorage(s, locale, nome, p);
+			} else {
+				caricaFileIntero(s, nome, locale, p);
+			}
+
+			archiviaRemoto(sftp, s, nome, p.idExecution(), p.esito());
+		} catch (Exception e) {
+			p.esito().errore(nome + ": " + messaggioErrore(e));
+			log(p.idExecution(), p.prefisso() + ESITO_KO + nome + "   " + origine + " — " + messaggioErrore(e));
+		} finally {
+			Files.deleteIfExists(locale);
+		}
+	}
+
+	/**
+	 * Il file scaricato resta su disco e si carica in streaming, senza leggerlo in memoria: con un file
+	 * da qualche GB un readAllBytes farebbe cadere il servizio (e byte[] non puo' comunque superare i
+	 * 2 GB).
+	 */
+	private void caricaFileIntero(SftpSchedule s, String nome, Path locale, Passo p) throws IOException {
+		long dimensione = Files.size(locale);
+		if (dimensione == 0) {
+			// Non e' un errore (capita con i file segnaposto e con gli export a zero record),
+			// ma va detto: altrimenti a valle si cerca un contenuto che non c'e' mai stato.
+			log(p.idExecution(), "         ATTENZIONE: il file di origine e' VUOTO (0 byte)");
+		}
+
+		caricaSuStorage(s, nome, locale);
+
+		p.esito().file++;
+		p.esito().byteTotali += dimensione;
+		log(p.idExecution(), p.prefisso() + ESITO_OK + nome + "   " + formatByte(dimensione) + " in "
+				+ formatDurata(System.currentTimeMillis() - p.inizio()) + VERSO + cartellaStorage(s) + "/" + nome);
 	}
 
 	/**
@@ -396,7 +428,9 @@ public class SftpTransferService {
 		Path dir = (base == null) ? Files.createTempDirectory(prefisso) : Files.createTempDirectory(base, prefisso);
 		try {
 			long liberi = Files.getFileStore(dir).getUsableSpace();
-			logger.info("Cartella di transito {} — spazio disponibile {}", dir, formatByte(liberi));
+			if (logger.isInfoEnabled()) {
+				logger.info("Cartella di transito {} — spazio disponibile {}", dir, formatByte(liberi));
+			}
 		} catch (Exception e) {
 			logger.debug("Spazio disponibile non determinabile per {}: {}", dir, e.getMessage());
 		}
@@ -426,85 +460,100 @@ public class SftpTransferService {
 	 * Le cartelle interne all'archivio vengono ignorate: i file finiscono tutti nella cartella di
 	 * storage configurata, che e' dove il servizio a valle li cerca.
 	 */
-	private void estraiZipSuStorage(SftpSchedule s, Path zipLocale, String nomeZip, Long idExecution, Esito esito,
-			int progressivo, int totale, long inizio) throws IOException {
-
-		String prefissoRiga = "[" + progressivo + "/" + totale + "] ";
+	void estraiZipSuStorage(SftpSchedule s, Path zipLocale, String nomeZip, Passo p) throws IOException {
 		BatchJobControl ctl = batchJobRegistry.get(jobName(s.getId()));
-		long limiteByte = (long) zipMaxFileMb * 1024L * 1024L;
-		int estratti = 0;
-		int saltati = 0;
-		long byteEstratti = 0;
+		ContoZip conto = new ContoZip();
 
 		try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(zipLocale.toFile())) {
+			ArchivioZip archivio = new ArchivioZip(zip, zipLocale, nomeZip);
 			java.util.Enumeration<? extends java.util.zip.ZipEntry> voci = zip.entries();
-			while (voci.hasMoreElements()) {
+			boolean fermato = false;
+			while (!fermato && voci.hasMoreElements()) {
 				java.util.zip.ZipEntry voce = voci.nextElement();
 				if (ctl.isStopRequested()) {
-					log(idExecution, "         STOP richiesto durante l'estrazione: " + estratti + " file estratti");
-					break;
+					log(p.idExecution(), "         STOP richiesto durante l'estrazione: " + conto.estratti
+							+ " file estratti");
+					fermato = true;
+				} else if (!voce.isDirectory()) {
+					estraiVoce(s, archivio, voce, p, conto);
 				}
-				if (voce.isDirectory()) {
-					continue;
-				}
-				String nomeInterno = soloNomeFile(voce.getName());
-				if (nomeInterno.isEmpty()) {
-					saltati++;
-					log(idExecution, "         SALTATA voce con nome non valido: " + voce.getName());
-					continue;
-				}
-				// getSize() = -1 quando l'archivio non dichiara la dimensione: in quel caso il controllo
-				// si fa comunque sui byte effettivamente letti.
-				if (voce.getSize() > limiteByte) {
-					saltati++;
-					esito.avviso(nomeZip + "/" + nomeInterno + ": voce oltre " + zipMaxFileMb + " MB, saltata");
-					log(idExecution, "         SALTATA " + nomeInterno + ": dichiarata "
-							+ formatByte(voce.getSize()) + ", oltre il limite di " + zipMaxFileMb + " MB");
-					continue;
-				}
-
-				// La voce viene scritta su disco e poi caricata in streaming: mai in memoria, cosi'
-				// l'estrazione regge archivi da GB con dentro file altrettanto grandi.
-				Path vocePath = zipLocale.getParent().resolve(nomeTemporaneo("zip_" + estratti + "_" + nomeInterno));
-				long dimensione;
-				try {
-					try (java.io.InputStream in = zip.getInputStream(voce)) {
-						dimensione = copiaConTetto(in, vocePath, limiteByte);
-					}
-					if (dimensione < 0) {
-						saltati++;
-						esito.avviso(nomeZip + "/" + nomeInterno + ": oltre " + zipMaxFileMb
-								+ " MB una volta decompressa");
-						log(idExecution, "         SALTATA " + nomeInterno + ": supera " + zipMaxFileMb
-								+ " MB una volta decompressa");
-						continue;
-					}
-
-					caricaSuStorage(s, nomeInterno, vocePath);
-				} finally {
-					// La copia estratta serve solo al caricamento: si libera subito lo spazio, altrimenti
-					// un archivio da GB ne occuperebbe il doppio fino a fine elaborazione.
-					Files.deleteIfExists(vocePath);
-				}
-				estratti++;
-				byteEstratti += dimensione;
-				esito.file++;
-				esito.byteTotali += dimensione;
-				log(idExecution, "         estratto " + nomeInterno + "   " + formatByte(dimensione)
-						+ "   a " + cartellaStorage(s) + "/" + nomeInterno);
 			}
 		}
 
-		if (estratti == 0 && saltati == 0) {
-			esito.avviso(nomeZip + ": archivio senza file utili");
-			log(idExecution, prefissoRiga + "ATTENZIONE " + nomeZip + "   archivio VUOTO: nessun file estratto");
+		if (conto.estratti == 0 && conto.saltati == 0) {
+			p.esito().avviso(nomeZip + ": archivio senza file utili");
+			log(p.idExecution(), p.prefisso() + "ATTENZIONE " + nomeZip + "   archivio VUOTO: nessun file estratto");
 		} else {
-			log(idExecution, prefissoRiga + "OK      " + nomeZip + "   " + estratti + " file estratti ("
-					+ formatByte(byteEstratti) + ")" + (saltati > 0 ? ", " + saltati + " saltati" : "")
-					+ " in " + formatDurata(System.currentTimeMillis() - inizio)
-					+ "   a " + cartellaStorage(s));
+			log(p.idExecution(), p.prefisso() + ESITO_OK + nomeZip + "   " + conto.estratti + " file estratti ("
+					+ formatByte(conto.byteEstratti) + ")" + (conto.saltati > 0 ? ", " + conto.saltati + " saltati" : "")
+					+ " in " + formatDurata(System.currentTimeMillis() - p.inizio())
+					+ VERSO + cartellaStorage(s));
 		}
-		log(idExecution, "         l'archivio " + nomeZip + " NON viene copiato su storage (scartato)");
+		log(p.idExecution(), "         l'archivio " + nomeZip + " NON viene copiato su storage (scartato)");
+	}
+
+	/** L'archivio aperto: il file ZIP, dove sta su disco e il nome con cui e' arrivato. */
+	private record ArchivioZip(java.util.zip.ZipFile zip, Path locale, String nome) {
+	}
+
+	/** Contatori dell'estrazione di UN archivio. */
+	private static class ContoZip {
+		int estratti;
+		int saltati;
+		long byteEstratti;
+	}
+
+	/** Estrae UNA voce dell'archivio (mai una cartella) e la carica su storage, oppure la salta dicendo perche'. */
+	private void estraiVoce(SftpSchedule s, ArchivioZip archivio, java.util.zip.ZipEntry voce, Passo p, ContoZip conto)
+			throws IOException {
+		long limiteByte = zipMaxFileMb * 1024L * 1024L;
+		String nomeInterno = soloNomeFile(voce.getName());
+		if (nomeInterno.isEmpty()) {
+			conto.saltati++;
+			log(p.idExecution(), "         SALTATA voce con nome non valido: " + voce.getName());
+			return;
+		}
+		// getSize() = -1 quando l'archivio non dichiara la dimensione: in quel caso il controllo
+		// si fa comunque sui byte effettivamente letti. Limite 0 = nessun limite, come in copiaConTetto:
+		// senza la guardia, con 0 ogni voce non vuota risultava "oltre il limite".
+		if (limiteByte > 0 && voce.getSize() > limiteByte) {
+			conto.saltati++;
+			p.esito().avviso(archivio.nome() + "/" + nomeInterno + ": voce oltre " + zipMaxFileMb + " MB, saltata");
+			log(p.idExecution(), "         SALTATA " + nomeInterno + ": dichiarata "
+					+ formatByte(voce.getSize()) + ", oltre il limite di " + zipMaxFileMb + " MB");
+			return;
+		}
+
+		// La voce viene scritta su disco e poi caricata in streaming: mai in memoria, cosi'
+		// l'estrazione regge archivi da GB con dentro file altrettanto grandi.
+		Path vocePath = archivio.locale().getParent()
+				.resolve(nomeTemporaneo("zip_" + conto.estratti + "_" + nomeInterno));
+		long dimensione;
+		try {
+			try (java.io.InputStream in = archivio.zip().getInputStream(voce)) {
+				dimensione = copiaConTetto(in, vocePath, limiteByte);
+			}
+			if (dimensione < 0) {
+				conto.saltati++;
+				p.esito().avviso(archivio.nome() + "/" + nomeInterno + ": oltre " + zipMaxFileMb
+						+ " MB una volta decompressa");
+				log(p.idExecution(), "         SALTATA " + nomeInterno + ": supera " + zipMaxFileMb
+						+ " MB una volta decompressa");
+				return;
+			}
+
+			caricaSuStorage(s, nomeInterno, vocePath);
+		} finally {
+			// La copia estratta serve solo al caricamento: si libera subito lo spazio, altrimenti
+			// un archivio da GB ne occuperebbe il doppio fino a fine elaborazione.
+			Files.deleteIfExists(vocePath);
+		}
+		conto.estratti++;
+		conto.byteEstratti += dimensione;
+		p.esito().file++;
+		p.esito().byteTotali += dimensione;
+		log(p.idExecution(), "         estratto " + nomeInterno + "   " + formatByte(dimensione)
+				+ VERSO + cartellaStorage(s) + "/" + nomeInterno);
 	}
 
 	/**
@@ -517,20 +566,25 @@ public class SftpTransferService {
 	 *
 	 * @param limiteByte tetto in byte; {@code <= 0} disattiva il controllo
 	 */
-	private static long copiaConTetto(java.io.InputStream in, Path destinazione, long limiteByte) throws IOException {
+	static long copiaConTetto(java.io.InputStream in, Path destinazione, long limiteByte) throws IOException {
 		byte[] buf = new byte[64 * 1024];
 		long totale = 0;
+		boolean oltre = false;
 		try (java.io.OutputStream out = Files.newOutputStream(destinazione)) {
 			int letti;
-			while ((letti = in.read(buf)) > 0) {
+			while (!oltre && (letti = in.read(buf)) > 0) {
 				totale += letti;
 				if (limiteByte > 0 && totale > limiteByte) {
-					out.close();
-					Files.deleteIfExists(destinazione);
-					return -1;
+					oltre = true;
+				} else {
+					out.write(buf, 0, letti);
 				}
-				out.write(buf, 0, letti);
 			}
+		}
+		if (oltre) {
+			// A file ormai chiuso: su Windows un file ancora aperto non si cancella.
+			Files.deleteIfExists(destinazione);
+			return -1;
 		}
 		return totale;
 	}
@@ -604,7 +658,7 @@ public class SftpTransferService {
 		try {
 			sftp.stat(path);
 			return true;
-		} catch (Exception e) {
+		} catch (Exception _) {
 			// L'eccezione tipica e' "No such file": il file non c'e' piu', che e' l'esito atteso.
 			return false;
 		}
@@ -621,18 +675,25 @@ public class SftpTransferService {
 		logFiltro(idExecution, s, filtroRisolto);
 		Path tempDir = creaCartellaTemporanea("sftp-up-");
 
-		List<String> daInviare = new ArrayList<>();
-		int totaleInCartella = 0;
-		for (String nome : elencaStorage(s)) {
-			totaleInCartella++;
-			if (filtro == null || filtro.matcher(nome).matches()) {
-				daInviare.add(nome);
-			}
-		}
-		log(idExecution, "Cartella di ORIGINE      : " + cartellaStorage(s));
-		log(idExecution, "File da trasferire: " + daInviare.size() + " (su " + totaleInCartella
-				+ " elementi in cartella)");
+		try {
+			List<String> inCartella = elencaStorage(s);
+			List<String> daInviare = inCartella.stream()
+					.filter(nome -> filtro == null || filtro.matcher(nome).matches()).toList();
+			log(idExecution, "Cartella di ORIGINE      : " + cartellaStorage(s));
+			log(idExecution, "File da trasferire: " + daInviare.size() + " (su " + inCartella.size()
+					+ " elementi in cartella)");
 
+			inviaTutti(s, daInviare, tempDir, new Passo(idExecution, esito, 0, daInviare.size(), 0L), ctl);
+		} finally {
+			pulisci(tempDir);
+		}
+	}
+
+	/** Apre la connessione e invia i file uno alla volta, fermandosi fra un file e l'altro se richiesto. */
+	private void inviaTutti(SftpSchedule s, List<String> daInviare, Path tempDir, Passo partenza, BatchJobControl ctl)
+			throws IOException {
+		Long idExecution = partenza.idExecution();
+		Esito esito = partenza.esito();
 		try (SSHClient ssh = connetti(s.getSftpHost(), s.getSftpPort(), s.getSftpUsername(),
 				credentialCipher.decrypt(s.getSftpPasswordEnc()));
 				SFTPClient sftp = ssh.newSFTPClient()) {
@@ -648,31 +709,32 @@ public class SftpTransferService {
 					return;
 				}
 				progressivo++;
-				Path locale = tempDir.resolve(nomeTemporaneo(nome));
-				long inizio = System.currentTimeMillis();
-				log(idExecution, "[" + progressivo + "/" + daInviare.size() + "] INIZIO  " + nome
-						+ "   da " + cartellaStorage(s) + "/" + nome);
-				try {
-					long dimensione = scaricaDaStorage(s, nome, locale);
-					sftp.put(locale.toString(), percorsoRemoto(s.getSftpPath(), nome));
-
-					esito.file++;
-					esito.byteTotali += dimensione;
-					log(idExecution, "[" + progressivo + "/" + daInviare.size() + "] OK      " + nome + "   "
-							+ formatByte(dimensione) + " in " + formatDurata(System.currentTimeMillis() - inizio)
-							+ "   a " + cartellaSftp(s) + "/" + nome);
-
-					archiviaStorage(s, nome, idExecution, esito);
-				} catch (Exception e) {
-					esito.errore(nome + ": " + messaggioErrore(e));
-					log(idExecution, "[" + progressivo + "/" + daInviare.size() + "] KO      " + nome + "   "
-							+ cartellaStorage(s) + "/" + nome + " — " + messaggioErrore(e));
-				} finally {
-					Files.deleteIfExists(locale);
-				}
+				inviaFile(sftp, s, nome, tempDir,
+						new Passo(idExecution, esito, progressivo, daInviare.size(), System.currentTimeMillis()));
 			}
+		}
+	}
+
+	/** Prende UN file dallo storage e lo carica sul server SFTP. */
+	private void inviaFile(SFTPClient sftp, SftpSchedule s, String nome, Path tempDir, Passo p) throws IOException {
+		Path locale = tempDir.resolve(nomeTemporaneo(nome));
+		log(p.idExecution(), p.prefisso() + "INIZIO  " + nome + "   da " + cartellaStorage(s) + "/" + nome);
+		try {
+			long dimensione = scaricaDaStorage(s, nome, locale);
+			sftp.put(locale.toString(), percorsoRemoto(s.getSftpPath(), nome));
+
+			p.esito().file++;
+			p.esito().byteTotali += dimensione;
+			log(p.idExecution(), p.prefisso() + ESITO_OK + nome + "   " + formatByte(dimensione) + " in "
+					+ formatDurata(System.currentTimeMillis() - p.inizio()) + VERSO + cartellaSftp(s) + "/" + nome);
+
+			archiviaStorage(s, nome, p.idExecution(), p.esito());
+		} catch (Exception e) {
+			p.esito().errore(nome + ": " + messaggioErrore(e));
+			log(p.idExecution(), p.prefisso() + ESITO_KO + nome + "   " + cartellaStorage(s) + "/" + nome + " — "
+					+ messaggioErrore(e));
 		} finally {
-			pulisci(tempDir);
+			Files.deleteIfExists(locale);
 		}
 	}
 
@@ -681,35 +743,13 @@ public class SftpTransferService {
 		String politica = s.getPostTransfer();
 		try {
 			if (SftpSchedule.POST_CANCELLA.equals(politica)) {
-				String url = UriComponentsBuilder.fromUriString(storageUrl + "/wr-storage/delete")
-						.queryParam("intermediario", s.getStorageIntermediario())
-						.queryParam("type", s.getStorageType()).queryParam("folder", s.getStorageFolder())
-						.queryParam("fileName", nome).toUriString();
-				ResponseEntity<Map> resp = restTemplate.exchange(url, HttpMethod.POST,
-						new HttpEntity<>(headerInterni()), Map.class);
-				// be-storage risponde 200 anche quando non ha cancellato nulla (success=false o count=0):
-				// senza guardare il corpo si direbbe "cancellata" per un file rimasto al suo posto.
-				Map<String, Object> body = resp.getBody();
-				Object count = (body == null) ? null : body.get("count");
-				boolean fatto = body != null && Boolean.TRUE.equals(body.get("success"))
-						&& count instanceof Number n && n.intValue() > 0;
-				if (fatto) {
-					log(idExecution, "         origine cancellata: " + cartellaStorage(s) + "/" + nome);
-				} else {
-					String dettaglio = (body == null) ? "nessuna risposta" : String.valueOf(body.get("message"));
-					esito.avviso(nome + ": cancellazione dallo storage non effettuata (" + dettaglio + ")");
-					log(idExecution, "         ATTENZIONE: cancellazione NON effettuata su " + cartellaStorage(s)
-							+ "/" + nome + " — " + dettaglio);
-				}
+				cancellaDaStorage(s, nome, idExecution, esito);
 			} else if (SftpSchedule.POST_LASCIA.equals(politica)) {
 				log(idExecution, "         origine lasciata nello storage (politica LASCIA)");
 			} else if (SftpSchedule.POST_SPOSTA.equals(politica)) {
 				String target = s.getStorageFolder() + "/" + cartellaArchivio(s);
 				String nuovoNome = prefissoOra() + "_" + nome;
-				String url = UriComponentsBuilder.fromUriString(storageUrl + "/wr-storage/move")
-						.queryParam("intermediario", s.getStorageIntermediario())
-						.queryParam("type", s.getStorageType()).queryParam("folder", s.getStorageFolder())
-						.queryParam("fileName", nome).queryParam("targetFolder", target)
+				String url = urlStorage("move", s).queryParam(PARAM_FILE_NAME, nome).queryParam("targetFolder", target)
 						.queryParam("targetFileName", nuovoNome).toUriString();
 				restTemplate.exchange(url, HttpMethod.POST, new HttpEntity<>(headerInterni()), Map.class);
 				log(idExecution, "         origine archiviata: " + cartellaStorage(s) + "/" + nome + "   ->   storage:/"
@@ -722,15 +762,41 @@ public class SftpTransferService {
 		}
 	}
 
+	@SuppressWarnings("unchecked")
+	private void cancellaDaStorage(SftpSchedule s, String nome, Long idExecution, Esito esito) {
+		String url = urlStorage("delete", s).queryParam(PARAM_FILE_NAME, nome).toUriString();
+		ResponseEntity<Map> resp = restTemplate.exchange(url, HttpMethod.POST, new HttpEntity<>(headerInterni()),
+				Map.class);
+		// be-storage risponde 200 anche quando non ha cancellato nulla (success=false o count=0):
+		// senza guardare il corpo si direbbe "cancellata" per un file rimasto al suo posto.
+		Map<String, Object> body = resp.getBody();
+		Object count = (body == null) ? null : body.get("count");
+		boolean fatto = body != null && Boolean.TRUE.equals(body.get("success"))
+				&& count instanceof Number n && n.intValue() > 0;
+		if (fatto) {
+			log(idExecution, "         origine cancellata: " + cartellaStorage(s) + "/" + nome);
+		} else {
+			String dettaglio = (body == null) ? "nessuna risposta" : String.valueOf(body.get("message"));
+			esito.avviso(nome + ": cancellazione dallo storage non effettuata (" + dettaglio + ")");
+			log(idExecution, "         ATTENZIONE: cancellazione NON effettuata su " + cartellaStorage(s)
+					+ "/" + nome + " — " + dettaglio);
+		}
+	}
+
 	// ------------------------------------------------------------------------------------------------
 	// be-storage
 	// ------------------------------------------------------------------------------------------------
 
+	/** Indirizzo di un'operazione di be-storage sulla cartella della schedulazione. */
+	private UriComponentsBuilder urlStorage(String operazione, SftpSchedule s) {
+		return UriComponentsBuilder.fromUriString(storageUrl + "/wr-storage/" + operazione)
+				.queryParam("intermediario", s.getStorageIntermediario()).queryParam("type", s.getStorageType())
+				.queryParam("folder", s.getStorageFolder());
+	}
+
 	@SuppressWarnings("unchecked")
 	private List<String> elencaStorage(SftpSchedule s) {
-		String url = UriComponentsBuilder.fromUriString(storageUrl + "/wr-storage/list")
-				.queryParam("intermediario", s.getStorageIntermediario()).queryParam("type", s.getStorageType())
-				.queryParam("folder", s.getStorageFolder()).toUriString();
+		String url = urlStorage("list", s).toUriString();
 
 		ResponseEntity<Map> resp = restTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headerInterni()),
 				Map.class);
@@ -738,8 +804,8 @@ public class SftpTransferService {
 		Map<String, Object> body = resp.getBody();
 		if (body != null && body.get("files") instanceof List<?> files) {
 			for (Object o : files) {
-				if (o instanceof Map<?, ?> m && m.get("fileName") != null) {
-					nomi.add(String.valueOf(m.get("fileName")));
+				if (o instanceof Map<?, ?> m && m.get(PARAM_FILE_NAME) != null) {
+					nomi.add(String.valueOf(m.get(PARAM_FILE_NAME)));
 				}
 			}
 		}
@@ -756,14 +822,12 @@ public class SftpTransferService {
 	 * @return byte scaricati
 	 */
 	private long scaricaDaStorage(SftpSchedule s, String fileName, Path destinazione) throws IOException {
-		String url = UriComponentsBuilder.fromUriString(storageUrl + "/wr-storage/download")
-				.queryParam("intermediario", s.getStorageIntermediario()).queryParam("type", s.getStorageType())
-				.queryParam("folder", s.getStorageFolder()).queryParam("fileName", fileName).toUriString();
+		String url = urlStorage("download", s).queryParam(PARAM_FILE_NAME, fileName).toUriString();
 
 		java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url)).GET()
 				.timeout(java.time.Duration.ofMinutes(httpTimeoutMin));
 		if (internalToken != null && !internalToken.isBlank()) {
-			b.header("X-INTERNAL-TOKEN", internalToken);
+			b.header(HEADER_TOKEN_INTERNO, internalToken);
 		}
 		try {
 			java.net.http.HttpResponse<Path> resp = httpFile().send(b.build(),
@@ -786,16 +850,14 @@ public class SftpTransferService {
 	 * nessuna copia del contenuto in memoria, quindi la dimensione del file non e' un limite.
 	 */
 	private void caricaSuStorage(SftpSchedule s, String fileName, Path file) throws IOException {
-		String url = UriComponentsBuilder.fromUriString(storageUrl + "/wr-storage/write-stream")
-				.queryParam("intermediario", s.getStorageIntermediario()).queryParam("type", s.getStorageType())
-				.queryParam("folder", s.getStorageFolder()).queryParam("fileName", fileName).toUriString();
+		String url = urlStorage("write-stream", s).queryParam(PARAM_FILE_NAME, fileName).toUriString();
 
 		java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url))
 				.header("Content-Type", "application/octet-stream")
 				.timeout(java.time.Duration.ofMinutes(httpTimeoutMin))
 				.POST(java.net.http.HttpRequest.BodyPublishers.ofFile(file));
 		if (internalToken != null && !internalToken.isBlank()) {
-			b.header("X-INTERNAL-TOKEN", internalToken);
+			b.header(HEADER_TOKEN_INTERNO, internalToken);
 		}
 		try {
 			java.net.http.HttpResponse<String> resp = httpFile().send(b.build(),
@@ -813,7 +875,7 @@ public class SftpTransferService {
 	private HttpHeaders headerInterni() {
 		HttpHeaders h = new HttpHeaders();
 		if (internalToken != null && !internalToken.isBlank()) {
-			h.set("X-INTERNAL-TOKEN", internalToken);
+			h.set(HEADER_TOKEN_INTERNO, internalToken);
 		}
 		return h;
 	}
@@ -881,26 +943,32 @@ public class SftpTransferService {
 	 */
 	private SSHClient connetti(String host, Integer porta, String utente, String password) throws IOException {
 		SSHClient ssh = new SSHClient();
-		ssh.setConnectTimeout(connectTimeoutMs);
-		ssh.setTimeout(readTimeoutMs);
-		if (knownHostsFile != null && !knownHostsFile.isBlank()) {
-			ssh.loadKnownHosts(new java.io.File(knownHostsFile));
-		} else {
-			ssh.addHostKeyVerifier(new PromiscuousVerifier());
-		}
 		try {
+			ssh.setConnectTimeout(connectTimeoutMs);
+			ssh.setTimeout(readTimeoutMs);
+			if (knownHostsFile != null && !knownHostsFile.isBlank()) {
+				ssh.loadKnownHosts(new java.io.File(knownHostsFile));
+			} else {
+				ssh.addHostKeyVerifier(new PromiscuousVerifier());
+			}
 			ssh.connect(host, (porta == null) ? 22 : porta);
 			// NB: mai loggare la password.
 			ssh.authPassword(utente, password == null ? "" : password);
-		} catch (IOException e) {
-			try {
-				ssh.close();
-			} catch (IOException ignored) {
-				// gia' in errore: la chiusura non aggiunge informazione
-			}
+			return ssh;
+		} catch (IOException | RuntimeException e) {
+			// Qualunque cosa vada storta prima di consegnarla al chiamante, la connessione si chiude qui:
+			// nessun altro ne ha il riferimento.
+			chiudiInSilenzio(ssh);
 			throw e;
 		}
-		return ssh;
+	}
+
+	private static void chiudiInSilenzio(SSHClient ssh) {
+		try {
+			ssh.close();
+		} catch (IOException _) {
+			// gia' in errore: la chiusura non aggiunge informazione
+		}
 	}
 
 	/**
@@ -929,16 +997,16 @@ public class SftpTransferService {
 					.append(elenco.size()).append(" elementi.");
 
 			if (filePattern != null && !filePattern.isBlank()) {
-				String risolto = risolviSegnaposti(filePattern.trim(), LocalDateTime.now());
+				String risolto = risolviSegnaposti(filePattern.trim(), LocalDateTime.now(ZoneId.systemDefault()));
 				Pattern filtro = compilaPattern(risolto);
 				long quanti = elenco.stream()
 						.filter(r -> r.isRegularFile() && (filtro == null || filtro.matcher(r.getName()).matches()))
 						.count();
 				msg.append(" Con il filtro '").append(risolto).append("' oggi corrisponderebbero ").append(quanti)
-						.append(quanti == 1 ? " file." : " file.");
+						.append(" file.");
 			}
 			return new SftpTestResponse(true, msg.toString());
-		} catch (net.schmizz.sshj.userauth.UserAuthException e) {
+		} catch (net.schmizz.sshj.userauth.UserAuthException _) {
 			return new SftpTestResponse(false, "Autenticazione non riuscita: utenza o password errate.");
 		} catch (Exception e) {
 			return new SftpTestResponse(false, "Verifica non riuscita: " + messaggioErrore(e));
@@ -951,11 +1019,11 @@ public class SftpTransferService {
 	 */
 	public SftpTestResponse testConnessioneSalvata(Long scheduleId) {
 		SftpSchedule s = scheduleRepository.findById(scheduleId)
-				.orElseThrow(() -> new RuntimeException("Schedulazione SFTP non trovata"));
+				.orElseThrow(() -> new BatchException("Schedulazione SFTP non trovata"));
 		String password;
 		try {
 			password = credentialCipher.decrypt(s.getSftpPasswordEnc());
-		} catch (Exception e) {
+		} catch (Exception _) {
 			// Tipico se BATCH_CRED_SECRET/SALT sono cambiati dopo il salvataggio.
 			return new SftpTestResponse(false, "Password memorizzata non decifrabile: reinserire le credenziali.");
 		}
@@ -978,7 +1046,7 @@ public class SftpTransferService {
 				return;
 			}
 			String precedente = (e.getLog() == null) ? "" : e.getLog();
-			String riga = "[" + LocalDateTime.now().format(FMT_LOG) + "] " + messaggio;
+			String riga = "[" + LocalDateTime.now(ZoneId.systemDefault()).format(FMT_LOG) + "] " + messaggio;
 			e.setLog(precedente.isEmpty() ? riga : potaSeTroppoLungo(precedente) + System.lineSeparator() + riga);
 			executionRepository.save(e);
 		} catch (Exception ex) {
@@ -1012,7 +1080,7 @@ public class SftpTransferService {
 				return;
 			}
 			e.setStatus(stato);
-			e.setEndedAt(LocalDateTime.now());
+			e.setEndedAt(LocalDateTime.now(ZoneId.systemDefault()));
 			e.setFileTrasferiti(esito.file);
 			e.setByteTrasferiti(esito.byteTotali);
 			e.setErrorMessage(abbrevia(errore, 4000));
@@ -1030,7 +1098,7 @@ public class SftpTransferService {
 			if (s == null) {
 				return;
 			}
-			s.setLastRunAt(LocalDateTime.now());
+			s.setLastRunAt(LocalDateTime.now(ZoneId.systemDefault()));
 			s.setNextRunAt(CronScheduleUtil.nextRun(s.getCronExpression(), s.getTimezone(), s.getStartAt()));
 			scheduleRepository.save(s);
 		} catch (Exception ex) {
@@ -1108,36 +1176,36 @@ public class SftpTransferService {
 		int i = 0;
 		while (i < pattern.length()) {
 			int apre = pattern.indexOf('%', i);
-			if (apre < 0) {
-				out.append(pattern, i, pattern.length());
-				break;
-			}
-			int chiude = pattern.indexOf('%', apre + 1);
+			int chiude = (apre < 0) ? -1 : pattern.indexOf('%', apre + 1);
 			if (chiude < 0) {
-				// '%' spaiato: si lascia com'e', non si butta via il resto del filtro.
+				// Nessun altro segnaposto, oppure '%' spaiato: si lascia com'e', non si butta via il
+				// resto del filtro.
 				out.append(pattern, i, pattern.length());
-				break;
+				i = pattern.length();
+			} else {
+				out.append(pattern, i, apre);
+				out.append(risolviBlocco(pattern.substring(apre + 1, chiude), adesso));
+				i = chiude + 1;
 			}
-			out.append(pattern, i, apre);
-
-			String blocco = pattern.substring(apre + 1, chiude);
-			String formato = blocco;
-			LocalDateTime quando = adesso;
-			int barra = blocco.lastIndexOf('|');
-			if (barra >= 0) {
-				String coda = blocco.substring(barra + 1).trim();
-				try {
-					quando = adesso.plusDays(Long.parseLong(coda.startsWith("+") ? coda.substring(1) : coda));
-					formato = blocco.substring(0, barra);
-				} catch (NumberFormatException e) {
-					// scostamento non numerico: si tratta tutto come formato
-					formato = blocco;
-				}
-			}
-			out.append(formattaData(formato, quando));
-			i = chiude + 1;
 		}
 		return out.toString();
+	}
+
+	/** Risolve il contenuto di UN segnaposto: formato di data ed eventuale scostamento in giorni. */
+	private static String risolviBlocco(String blocco, LocalDateTime adesso) {
+		String formato = blocco;
+		LocalDateTime quando = adesso;
+		int barra = blocco.lastIndexOf('|');
+		if (barra >= 0) {
+			String coda = blocco.substring(barra + 1).trim();
+			try {
+				quando = adesso.plusDays(Long.parseLong(coda.startsWith("+") ? coda.substring(1) : coda));
+				formato = blocco.substring(0, barra);
+			} catch (NumberFormatException _) {
+				// scostamento non numerico: si tratta tutto come formato
+			}
+		}
+		return formattaData(formato, quando);
 	}
 
 	// Sostituzione dei token di data. Fatta a mano invece che con DateTimeFormatter: cosi' i separatori
@@ -1216,7 +1284,7 @@ public class SftpTransferService {
 	}
 
 	private String prefissoOra() {
-		return LocalDateTime.now().format(FMT_PREFISSO);
+		return LocalDateTime.now(ZoneId.systemDefault()).format(FMT_PREFISSO);
 	}
 
 	// Concatenazione di percorsi remoti: sempre con '/', senza doppie barre.
@@ -1239,12 +1307,12 @@ public class SftpTransferService {
 			for (Path p : s.toList()) {
 				Files.deleteIfExists(p);
 			}
-		} catch (Exception ignored) {
+		} catch (Exception _) {
 			// cartella temporanea: se resta qualcosa lo ripulisce il sistema
 		}
 		try {
 			Files.deleteIfExists(tempDir);
-		} catch (Exception ignored) {
+		} catch (Exception _) {
 			// idem
 		}
 	}
@@ -1258,7 +1326,7 @@ public class SftpTransferService {
 		if (e instanceof org.springframework.web.client.RestClientResponseException re) {
 			String corpo = re.getResponseBodyAsString();
 			String testa = re.getStatusCode().value() + " " + re.getStatusText();
-			return (corpo == null || corpo.isBlank()) ? testa : testa + " — " + abbrevia(corpo, 500);
+			return corpo.isBlank() ? testa : testa + " — " + abbrevia(corpo, 500);
 		}
 		String m = e.getMessage();
 		return (m == null || m.isBlank()) ? e.getClass().getSimpleName() : m;

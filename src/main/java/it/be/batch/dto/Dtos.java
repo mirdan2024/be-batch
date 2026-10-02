@@ -100,7 +100,7 @@ public class Dtos {
 			Long ripresaDi) {
 	}
 	
-	public record LoginResponse(String jwt) {};
+	public record LoginResponse(String jwt) {}
 
 	// Verifica credenziali della schedulazione: la UI deve provarle PRIMA di poter salvare, cosi' una
 	// password sbagliata (o riempita dall'autofill del browser) si scopre subito e non al primo cron.

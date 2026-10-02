@@ -78,7 +78,7 @@ public final class CronScheduleUtil {
 		CronExpression cron;
 		try {
 			cron = CronExpression.parse(cronExpression);
-		} catch (Exception e) {
+		} catch (Exception _) {
 			// Un cron non valido e' gia' un problema suo: qui si tace e non si mostrano occorrenze,
 			// invece di far fallire l'intero calendario per una riga scritta male.
 			return out;
@@ -112,7 +112,7 @@ public final class CronScheduleUtil {
 		}
 		try {
 			return ZoneId.of(timezone);
-		} catch (Exception e) {
+		} catch (Exception _) {
 			return ZoneId.systemDefault();
 		}
 	}

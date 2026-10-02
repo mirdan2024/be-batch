@@ -6,6 +6,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestTemplate;
 
+import it.common.base.util.ClientHttp;
+
 @Configuration
 public class RestTemplateConfig {
 
@@ -19,7 +21,7 @@ public class RestTemplateConfig {
 	@Value("${value.read.timeout:600000}")
 	private int valueReadTimeout;
 
-	@Bean("RestTimeout") // Il bean si chiama UFFICIALMENTE "RestTimeout"
+	@Bean("restTimeout") // Il bean si chiama UFFICIALMENTE "restTimeout"
 	public RestTemplate restTemplate() {
 		SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
 
@@ -29,6 +31,6 @@ public class RestTemplateConfig {
 		// Timeout di lettura (in millisecondi)
 		factory.setReadTimeout(valueReadTimeout); // 10 minuti
 
-		return new RestTemplate(factory);
+		return ClientHttp.nuovo(factory);
 	}
 }

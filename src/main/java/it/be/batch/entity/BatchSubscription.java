@@ -1,6 +1,5 @@
 package it.be.batch.entity;
 
-import java.sql.Timestamp;
 import java.time.LocalDateTime;
 
 import jakarta.persistence.Column;
@@ -115,6 +114,7 @@ public class BatchSubscription {
 	private LocalDateTime dataCessazione;
 
 	public BatchSubscription() {
+		// Costruttore senza argomenti richiesto da JPA.
 	}
 
 	public Long getIdUtenteAdmin() {

@@ -1,7 +1,7 @@
 package it.be.batch.service;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.List;
@@ -17,6 +17,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
 
 import it.ai.client.constants.AppConstants;
@@ -36,6 +37,9 @@ import it.be.batch.repo.BatchDefinitionRepository;
 import it.be.batch.repo.BatchExecutionRepository;
 import it.be.batch.repo.BatchSubscriptionRepository;
 import it.be.batch.repo.IntermediarioRefRepository;
+import it.common.base.util.DateUtils;
+import it.common.base.util.ErroreHttp;
+import it.common.base.util.LogUtils;
 
 @Service
 public class BatchSubscriptionService {
@@ -45,6 +49,9 @@ public class BatchSubscriptionService {
 
 	/** Esito di un'esecuzione fermata a mano (gli altri stati stanno in AppConstants). */
 	public static final String STATUS_INTERROTTA = "INTERROTTA";
+
+	private static final String SOTTOSCRIZIONE_NON_TROVATA = "Sottoscrizione batch non trovata";
+	private static final String DEFINIZIONE_NON_TROVATA = "Batch definition non trovata";
 
 	private final BatchSubscriptionRepository subscriptionRepository;
 	private final BatchDefinitionRepository definitionRepository;
@@ -76,7 +83,7 @@ public class BatchSubscriptionService {
 	public BatchSubscriptionService(BatchSubscriptionRepository subscriptionRepository,
 			BatchDefinitionRepository definitionRepository, BatchExecutionRepository executionRepository,
 			CredentialCipher credentialCipher, IntermediarioRefRepository intermediarioRefRepository,
-			@Qualifier("RestTimeout") RestTemplate restTemplate, @Lazy BatchScheduler batchScheduler) {
+			@Qualifier("restTimeout") RestTemplate restTemplate, @Lazy BatchScheduler batchScheduler) {
 		super();
 		this.subscriptionRepository = subscriptionRepository;
 		this.definitionRepository = definitionRepository;
@@ -106,11 +113,11 @@ public class BatchSubscriptionService {
 	 */
 	public TestCredentialsResponse testStoredCredentials(Long id) {
 		BatchSubscription entity = subscriptionRepository.findById(id)
-				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+				.orElseThrow(() -> new BatchException(SOTTOSCRIZIONE_NON_TROVATA));
 		String password;
 		try {
 			password = credentialCipher.decrypt(entity.getPasswordEnc());
-		} catch (Exception e) {
+		} catch (Exception _) {
 			// Tipico se BATCH_CRED_SECRET/SALT sono cambiati dopo il salvataggio.
 			return new TestCredentialsResponse(false,
 					"Password memorizzata non decifrabile: reinserire le credenziali.");
@@ -138,8 +145,14 @@ public class BatchSubscriptionService {
 				return new TestCredentialsResponse(true, "Credenziali valide.");
 			}
 			return new TestCredentialsResponse(false, "Login riuscito ma senza token: verificare be-base.");
-		} catch (org.springframework.web.client.HttpClientErrorException.Unauthorized e) {
+		} catch (org.springframework.web.client.HttpClientErrorException.Unauthorized _) {
 			return new TestCredentialsResponse(false, "Credenziali non valide (utenza inesistente, cessata o password errata).");
+		} catch (RestClientResponseException e) {
+			// L'indirizzo chiamato qui va detto: una risposta di errore che non e' il 401 delle credenziali vuol dire
+			// quasi sempre un indirizzo di login configurato male (url.bebase.login), e a chi fa la prova non lo
+			// direbbe nient'altro. Il messaggio dell'eccezione non lo porta piu' (GestoreErroriHttp).
+			return new TestCredentialsResponse(false, "Verifica non riuscita: " + ErroreHttp.perOperatore(e)
+					+ " (indirizzo chiamato: " + urlBeBaseLoginService + ")");
 		} catch (Exception e) {
 			return new TestCredentialsResponse(false, "Verifica non riuscita: " + e.getMessage());
 		}
@@ -181,39 +194,45 @@ public class BatchSubscriptionService {
 			if (s.getDataCessazione() != null) {
 				continue;
 			}
-			String codice = (s.getBatchDefinition() != null) ? s.getBatchDefinition().getCode() : null;
 			if (s.getCronExpression() == null || s.getCronExpression().isBlank()) {
 				// Manuale: nessuna partenza automatica, quindi nessuno slot occupato. Si conta perche'
 				// chi guarda il calendario deve sapere che esistono lavori che non compaiono qui.
 				senzaCron++;
-				continue;
-			}
-			List<LocalDateTime> quando = CronScheduleUtil.occorrenze(s.getCronExpression(), s.getTimezone(),
-					s.getStartAt(), da, a, MAX_OCCORRENZE_PER_SCHEDULAZIONE);
-			if (quando.isEmpty() && !cronValido(s.getCronExpression())) {
-				avvisi.add("Espressione cron non valida su \"" + codice + "\" (id " + s.getId()
-						+ "): la schedulazione non compare sul calendario");
-				continue;
-			}
-			if (quando.size() >= MAX_OCCORRENZE_PER_SCHEDULAZIONE) {
-				avvisi.add("\"" + codice + "\" (id " + s.getId() + ") supera le "
-						+ MAX_OCCORRENZE_PER_SCHEDULAZIONE + " partenze nel periodo: ne sono mostrate solo le prime");
-			}
-			for (LocalDateTime q : quando) {
-				occorrenze.add(new OccorrenzaCalendario(q, s.getId(), codice, null,
-						nomeIntermediario(s.getIdIntermediario()), s.isEnabled(), s.getCronExpression(),
-						s.getTimezone()));
+			} else {
+				aggiungiOccorrenze(s, da, a, occorrenze, avvisi);
 			}
 		}
 		occorrenze.sort(java.util.Comparator.comparing(OccorrenzaCalendario::quando));
 		return new CalendarioResponse(da, a, occorrenze, avvisi, senzaCron);
 	}
 
+	/** Le partenze di una schedulazione con cron nella finestra [da, a], con gli eventuali avvisi. */
+	private void aggiungiOccorrenze(BatchSubscription s, LocalDateTime da, LocalDateTime a,
+			List<OccorrenzaCalendario> occorrenze, List<String> avvisi) {
+		String codice = (s.getBatchDefinition() != null) ? s.getBatchDefinition().getCode() : null;
+		List<LocalDateTime> quando = CronScheduleUtil.occorrenze(s.getCronExpression(), s.getTimezone(),
+				s.getStartAt(), da, a, MAX_OCCORRENZE_PER_SCHEDULAZIONE);
+		if (quando.isEmpty() && !cronValido(s.getCronExpression())) {
+			avvisi.add("Espressione cron non valida su \"" + codice + "\" (id " + s.getId()
+					+ "): la schedulazione non compare sul calendario");
+			return;
+		}
+		if (quando.size() >= MAX_OCCORRENZE_PER_SCHEDULAZIONE) {
+			avvisi.add("\"" + codice + "\" (id " + s.getId() + ") supera le "
+					+ MAX_OCCORRENZE_PER_SCHEDULAZIONE + " partenze nel periodo: ne sono mostrate solo le prime");
+		}
+		for (LocalDateTime q : quando) {
+			occorrenze.add(new OccorrenzaCalendario(q, s.getId(), codice, null,
+					nomeIntermediario(s.getIdIntermediario()), s.isEnabled(), s.getCronExpression(),
+					s.getTimezone()));
+		}
+	}
+
 	private boolean cronValido(String cron) {
 		try {
-			org.springframework.scheduling.support.CronExpression.parse(cron);
+			CronExpression.parse(cron);
 			return true;
-		} catch (Exception e) {
+		} catch (Exception _) {
 			return false;
 		}
 	}
@@ -236,9 +255,9 @@ public class BatchSubscriptionService {
 	@Transactional
 	public void scambiaOrdine(Long id, Long idAltro) {
 		BatchSubscription a = subscriptionRepository.findById(id)
-				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+				.orElseThrow(() -> new BatchException(SOTTOSCRIZIONE_NON_TROVATA));
 		BatchSubscription b = subscriptionRepository.findById(idAltro)
-				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch da scambiare non trovata"));
+				.orElseThrow(() -> new BatchException("Sottoscrizione batch da scambiare non trovata"));
 
 		int ordineA = (a.getOrdine() != null) ? a.getOrdine() : a.getId().intValue();
 		int ordineB = (b.getOrdine() != null) ? b.getOrdine() : b.getId().intValue();
@@ -256,7 +275,7 @@ public class BatchSubscriptionService {
 
 	public BatchSubscriptionResponse findById(Long id) {
 		BatchSubscription entity = subscriptionRepository.findById(id)
-				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+				.orElseThrow(() -> new BatchException(SOTTOSCRIZIONE_NON_TROVATA));
 
 		return toResponse(entity);
 	}
@@ -265,11 +284,11 @@ public class BatchSubscriptionService {
 	public BatchSubscriptionResponse create(BatchSubscriptionRequest request) {
 
 		BatchDefinition definition = definitionRepository.findById(request.batchDefinitionId())
-				.orElseThrow(() -> new RuntimeException("Batch definition non trovata"));
+				.orElseThrow(() -> new BatchException(DEFINIZIONE_NON_TROVATA));
 
 		if (request.username() == null || request.username().isBlank()
 				|| request.password() == null || request.password().isBlank()) {
-			throw new RuntimeException("Username e password sono obbligatori per la sottoscrizione batch");
+			throw new BatchException("Username e password sono obbligatori per la sottoscrizione batch");
 		}
 
 		BatchSubscription entity = new BatchSubscription();
@@ -284,7 +303,7 @@ public class BatchSubscriptionService {
 		entity.setParamsJson(request.paramsJson());
 		entity.setBodyJson(request.bodyJson());
 		entity.setIdUtenteAdmin(request.idUtenteAdmin());
-		entity.setDataCreazione(LocalDateTime.now());
+		entity.setDataCreazione(LocalDateTime.now(ZoneId.systemDefault()));
 		entity.setStartAt(parseStartAt(request.startAt()));
 		entity.setJobSuccessivo(normalizzaJobSuccessivo(request.jobSuccessivo()));
 		entity.setNextRunAt(calculateNextRun(entity));
@@ -300,10 +319,10 @@ public class BatchSubscriptionService {
 	public BatchSubscriptionResponse update(Long id, BatchSubscriptionRequest request) {
 
 		BatchSubscription entity = subscriptionRepository.findById(id)
-				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+				.orElseThrow(() -> new BatchException(SOTTOSCRIZIONE_NON_TROVATA));
 
 		BatchDefinition definition = definitionRepository.findById(request.batchDefinitionId())
-				.orElseThrow(() -> new RuntimeException("Batch definition non trovata"));
+				.orElseThrow(() -> new BatchException(DEFINIZIONE_NON_TROVATA));
 
 		entity.setIdIntermediario(request.idIntermediario());
 		entity.setBatchDefinition(definition);
@@ -336,7 +355,7 @@ public class BatchSubscriptionService {
 	@Transactional
 	public void enable(Long id) {
 		BatchSubscription entity = subscriptionRepository.findById(id)
-				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+				.orElseThrow(() -> new BatchException(SOTTOSCRIZIONE_NON_TROVATA));
 
 		entity.setEnabled(true);
 		entity.setDataCessazione(null);
@@ -355,10 +374,10 @@ public class BatchSubscriptionService {
 	@Transactional
 	public void disable(Long id) {
 		BatchSubscription entity = subscriptionRepository.findById(id)
-				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+				.orElseThrow(() -> new BatchException(SOTTOSCRIZIONE_NON_TROVATA));
 
 		entity.setEnabled(false);
-		entity.setDataCessazione(LocalDateTime.now());
+		entity.setDataCessazione(LocalDateTime.now(ZoneId.systemDefault()));
 		subscriptionRepository.save(entity);
 	}
 
@@ -368,7 +387,7 @@ public class BatchSubscriptionService {
 	@Transactional
 	public void delete(Long id) {
 		if (!subscriptionRepository.existsById(id)) {
-			throw new RuntimeException("Sottoscrizione batch non trovata: " + id);
+			throw new BatchException(SOTTOSCRIZIONE_NON_TROVATA + ": " + id);
 		}
 		executionRepository.deleteByBatchSubscriptionId(id);
 		subscriptionRepository.deleteById(id);
@@ -384,7 +403,7 @@ public class BatchSubscriptionService {
 	public it.be.batch.dto.Dtos.PaginaResponse<BatchExecutionResponse> findExecutions(Long subscriptionId, int page,
 			int size) {
 		int p = Math.max(0, page - 1);
-		int s = Math.min(Math.max(1, size), 200);
+		int s = Math.clamp(size, 1, 200);
 		org.springframework.data.domain.Page<it.be.batch.entity.BatchExecution> pagina = executionRepository
 				.findByBatchSubscriptionIdOrderByStartedAtDesc(subscriptionId,
 						org.springframework.data.domain.PageRequest.of(p, s));
@@ -394,7 +413,7 @@ public class BatchSubscriptionService {
 
 	private BatchExecutionResponse toExecutionResponse(BatchExecution e) {
 		Long durationMs = (e.getStartedAt() != null && e.getEndedAt() != null)
-				? Duration.between(e.getStartedAt(), e.getEndedAt()).toMillis()
+				? DateUtils.durataFra(e.getStartedAt(), e.getEndedAt()).toMillis()
 				: null;
 		return new BatchExecutionResponse(e.getId(), e.getStatus(), e.getStartedAt(), e.getEndedAt(), durationMs,
 				e.getResponseCode(), e.getErrorMessage(), e.getResponseBody(), e.getLog(), e.getIdRipresaDi());
@@ -418,8 +437,8 @@ public class BatchSubscriptionService {
 		}
 		try {
 			return LocalDateTime.parse(startAt);
-		} catch (Exception e) {
-			throw new RuntimeException("Data e ora di partenza non valide: " + startAt);
+		} catch (Exception _) {
+			throw new BatchException("Data e ora di partenza non valide: " + startAt);
 		}
 	}
 
@@ -481,7 +500,7 @@ public class BatchSubscriptionService {
 	@Transactional
 	public Map<String, Object> interrompi(Long subscriptionId) {
 		BatchSubscription entity = subscriptionRepository.findById(subscriptionId)
-				.orElseThrow(() -> new RuntimeException("Sottoscrizione batch non trovata"));
+				.orElseThrow(() -> new BatchException(SOTTOSCRIZIONE_NON_TROVATA));
 
 		boolean interrottoThread = batchScheduler.interrompiEsecuzione(subscriptionId);
 
@@ -493,7 +512,7 @@ public class BatchSubscriptionService {
 
 		List<BatchExecution> inCorso = executionRepository
 				.findByBatchSubscriptionIdAndStatusAndEndedAtIsNull(subscriptionId, AppConstants.STATUS_PENDING);
-		LocalDateTime now = LocalDateTime.now();
+		LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
 		for (BatchExecution e : inCorso) {
 			// Scrittura mirata e solo se ancora aperta: il servizio sta scrivendo la telecronaca proprio
 			// adesso, e risalvare la riga letta un attimo fa la riporterebbe indietro.
@@ -541,8 +560,8 @@ public class BatchSubscriptionService {
 			return "stop inviato al servizio chiamato";
 		} catch (Exception e) {
 			logger.error("Interruzione subscription {}: stop al servizio fallito ({}): {}", entity.getId(), url,
-					e.getMessage());
-			return "stop al servizio chiamato non riuscito: " + e.getMessage();
+					LogUtils.motivo(e));
+			return "stop al servizio chiamato non riuscito: " + ErroreHttp.perOperatore(e);
 		}
 	}
 }

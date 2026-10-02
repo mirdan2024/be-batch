@@ -59,7 +59,6 @@ public class SftpScheduleController {
 		return service.findById(id);
 	}
 
-	/** Storico trasferimenti, decrescente per data di inizio e PAGINATO (pagina 1-based). */
 	/**
 	 * Calendario dei trasferimenti previsti fra due istanti.
 	 *
@@ -76,6 +75,7 @@ public class SftpScheduleController {
 		return service.calendario(da, a, idIntermediario);
 	}
 
+	/** Storico trasferimenti, decrescente per data di inizio e PAGINATO (pagina 1-based). */
 	@GetMapping("/{id}/executions")
 	public it.be.batch.dto.Dtos.PaginaResponse<SftpExecutionResponse> executions(@PathVariable Long id,
 			@RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "10") int size) {

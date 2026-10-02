@@ -99,15 +99,7 @@ public class BatchChainService {
 			percorso.add(codiceCorrente);
 		}
 
-		if (percorso.contains(successivo)) {
-			logger.warn("Catena interrotta: '{}' e' gia' stato eseguito in questa catena ({}). Verificare la"
-					+ " configurazione del campo 'job successivo': la catena rientra su se stessa.", successivo,
-					String.join(" -> ", percorso));
-			return;
-		}
-		if (percorso.size() >= PROFONDITA_MAX) {
-			logger.warn("Catena interrotta dopo {} lavori ({}): '{}' non viene lanciato.", percorso.size(),
-					String.join(" -> ", percorso), successivo);
+		if (catenaDaInterrompere(percorso, successivo)) {
 			return;
 		}
 
@@ -122,6 +114,34 @@ public class BatchChainService {
 			return;
 		}
 
+		lancia(daLanciare, percorso, codiceCorrente, successivo);
+	}
+
+	/**
+	 * Vero se il lavoro successivo NON va lanciato: e' gia' nella catena in corso (anello) oppure la
+	 * catena ha raggiunto la profondita' massima. Il motivo finisce nel log.
+	 */
+	private boolean catenaDaInterrompere(List<String> percorso, String successivo) {
+		if (percorso.contains(successivo)) {
+			if (logger.isWarnEnabled()) {
+				logger.warn("Catena interrotta: '{}' e' gia' stato eseguito in questa catena ({}). Verificare la"
+						+ " configurazione del campo 'job successivo': la catena rientra su se stessa.", successivo,
+						String.join(" -> ", percorso));
+			}
+			return true;
+		}
+		if (percorso.size() >= PROFONDITA_MAX) {
+			if (logger.isWarnEnabled()) {
+				logger.warn("Catena interrotta dopo {} lavori ({}): '{}' non viene lanciato.", percorso.size(),
+						String.join(" -> ", percorso), successivo);
+			}
+			return true;
+		}
+		return false;
+	}
+
+	private void lancia(List<BatchSubscription> daLanciare, List<String> percorso, String codiceCorrente,
+			String successivo) {
 		BatchScheduler s = scheduler.getObject();
 		for (BatchSubscription succ : daLanciare) {
 			catenaPerSubscription.put(succ.getId(), percorso);

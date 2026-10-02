@@ -1,6 +1,7 @@
 package it.be.batch.service;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 
 import org.springframework.stereotype.Service;
@@ -14,9 +15,9 @@ import it.be.batch.repo.BatchDefinitionRepository;
 @Service
 public class BatchDefinitionService {
 
+    private static final String DEFINIZIONE_NON_TROVATA = "Batch definition non trovato";
+
     private final BatchDefinitionRepository repository;
-    
-//    
 
     public List<BatchDefinitionResponse> findActiveDefinitions() {
         return repository.findActiveDefinitions()
@@ -32,7 +33,7 @@ public class BatchDefinitionService {
 
 	public BatchDefinitionResponse findById(Long id) {
         BatchDefinition entity = repository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Batch definition non trovato"));
+                .orElseThrow(() -> new BatchException(DEFINIZIONE_NON_TROVATA));
 
         return toResponse(entity);
     }
@@ -41,7 +42,7 @@ public class BatchDefinitionService {
     public BatchDefinitionResponse create(BatchDefinitionRequest request) {
 
         if (repository.existsByCode(request.code())) {
-            throw new RuntimeException("Codice batch già esistente: " + request.code());
+            throw new BatchException("Codice batch già esistente: " + request.code());
         }
 
         BatchDefinition entity = new BatchDefinition();
@@ -51,7 +52,7 @@ public class BatchDefinitionService {
         entity.setHttpMethod(request.httpMethod());
         entity.setEnabled(request.enabled() == null || request.enabled());
         // data_creazione è NOT NULL: senza, l'insert fallirebbe. data_cessazione resta null (= attiva).
-        entity.setDataCreazione(LocalDateTime.now());
+        entity.setDataCreazione(LocalDateTime.now(ZoneId.systemDefault()));
 
         return toResponse(repository.save(entity));
     }
@@ -60,7 +61,7 @@ public class BatchDefinitionService {
     public BatchDefinitionResponse update(Long id, BatchDefinitionRequest request) {
 
         BatchDefinition entity = repository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Batch definition non trovato"));
+                .orElseThrow(() -> new BatchException(DEFINIZIONE_NON_TROVATA));
 
         entity.setDescription(request.description());
         entity.setEndpointUrl(request.endpointUrl());
@@ -76,10 +77,10 @@ public class BatchDefinitionService {
     @Transactional
     public void delete(Long id) {
     	BatchDefinition entity = repository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Batch definition non trovato"));
+                .orElseThrow(() -> new BatchException(DEFINIZIONE_NON_TROVATA));
     	
     	entity.setEnabled(false);
-    	entity.setDataCessazione(LocalDateTime.now());
+    	entity.setDataCessazione(LocalDateTime.now(ZoneId.systemDefault()));
     	repository.save(entity);
     }
 

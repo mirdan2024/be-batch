@@ -1,9 +1,9 @@
 package it.be.batch.service;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,8 +15,11 @@ import it.common.base.bean.RestServiceMetadata;
 @Service
 public class RestServiceRegistryService {
 
-	@Autowired
-    private  BatchDefinitionRepository repository;
+    private final BatchDefinitionRepository repository;
+
+    public RestServiceRegistryService(BatchDefinitionRepository repository) {
+        this.repository = repository;
+    }
 
     @Transactional
     public void register(List<RestServiceMetadata> services) {
@@ -37,7 +40,7 @@ public class RestServiceRegistryService {
             entity.setHttpMethod(HttpMethodType.valueOf(metadata.getHttpMethod()));
             entity.setBodyJson(metadata.getRequestJson());
             entity.setEnabled(true);
-            entity.setDataCreazione(LocalDateTime.now());
+            entity.setDataCreazione(LocalDateTime.now(ZoneId.systemDefault()));
 
             repository.save(entity);
         }

@@ -1,8 +1,8 @@
 package it.be.batch.service;
 
 import java.util.ArrayList;
-import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +25,7 @@ import it.be.batch.repo.IntermediarioRefRepository;
 import it.be.batch.repo.SftpExecutionRepository;
 import it.be.batch.repo.SftpScheduleRepository;
 import it.common.base.batch.BatchJobRegistry;
+import it.common.base.util.DateUtils;
 
 /**
  * CRUD delle schedulazioni SFTP e lettura del loro storico: gemello di
@@ -34,6 +35,8 @@ import it.common.base.batch.BatchJobRegistry;
 public class SftpScheduleService {
 
 	private static final Logger logger = LoggerFactory.getLogger(SftpScheduleService.class);
+
+	private static final String SCHEDULAZIONE_NON_TROVATA = "Schedulazione SFTP non trovata";
 
 	private final SftpScheduleRepository scheduleRepository;
 	private final SftpExecutionRepository executionRepository;
@@ -94,38 +97,44 @@ public class SftpScheduleService {
 			if (s.getCronExpression() == null || s.getCronExpression().isBlank()) {
 				// Manuale: nessuna partenza automatica, quindi nessuno slot occupato.
 				senzaCron++;
-				continue;
-			}
-			List<LocalDateTime> quando = CronScheduleUtil.occorrenze(s.getCronExpression(), s.getTimezone(),
-					s.getStartAt(), da, a, MAX_OCCORRENZE_PER_SCHEDULAZIONE);
-			if (quando.isEmpty() && !cronValido(s.getCronExpression())) {
-				avvisi.add("Espressione cron non valida su \"" + s.getNome() + "\" (id " + s.getId()
-						+ "): la schedulazione non compare sul calendario");
-				continue;
-			}
-			if (quando.size() >= MAX_OCCORRENZE_PER_SCHEDULAZIONE) {
-				avvisi.add("\"" + s.getNome() + "\" (id " + s.getId() + ") supera le "
-						+ MAX_OCCORRENZE_PER_SCHEDULAZIONE + " partenze nel periodo: ne sono mostrate solo le prime");
-			}
-			// Il dettaglio dice a colpo d'occhio da che parte va il file e verso quale host: su un
-			// calendario di trasferimenti e' l'informazione che distingue due righe con nomi simili.
-			String dettaglio = (s.getDirezione() == null ? "" : s.getDirezione())
-					+ (s.getSftpHost() == null ? "" : " \u2192 " + s.getSftpHost());
-			for (LocalDateTime q : quando) {
-				occorrenze.add(new OccorrenzaCalendario(q, s.getId(), s.getNome(), dettaglio.trim(),
-						nomeIntermediario(s.getIdIntermediario()), s.isEnabled(), s.getCronExpression(),
-						s.getTimezone()));
+			} else {
+				aggiungiOccorrenze(s, da, a, occorrenze, avvisi);
 			}
 		}
 		occorrenze.sort(java.util.Comparator.comparing(OccorrenzaCalendario::quando));
 		return new CalendarioResponse(da, a, occorrenze, avvisi, senzaCron);
 	}
 
+	/** Le partenze di UNA schedulazione con cron nella finestra, con gli eventuali avvisi. */
+	private void aggiungiOccorrenze(SftpSchedule s, LocalDateTime da, LocalDateTime a,
+			List<OccorrenzaCalendario> occorrenze, List<String> avvisi) {
+		List<LocalDateTime> quando = CronScheduleUtil.occorrenze(s.getCronExpression(), s.getTimezone(),
+				s.getStartAt(), da, a, MAX_OCCORRENZE_PER_SCHEDULAZIONE);
+		if (quando.isEmpty() && !cronValido(s.getCronExpression())) {
+			avvisi.add("Espressione cron non valida su \"" + s.getNome() + "\" (id " + s.getId()
+					+ "): la schedulazione non compare sul calendario");
+			return;
+		}
+		if (quando.size() >= MAX_OCCORRENZE_PER_SCHEDULAZIONE) {
+			avvisi.add("\"" + s.getNome() + "\" (id " + s.getId() + ") supera le "
+					+ MAX_OCCORRENZE_PER_SCHEDULAZIONE + " partenze nel periodo: ne sono mostrate solo le prime");
+		}
+		// Il dettaglio dice a colpo d'occhio da che parte va il file e verso quale host: su un
+		// calendario di trasferimenti e' l'informazione che distingue due righe con nomi simili.
+		String dettaglio = (s.getDirezione() == null ? "" : s.getDirezione())
+				+ (s.getSftpHost() == null ? "" : " → " + s.getSftpHost());
+		for (LocalDateTime q : quando) {
+			occorrenze.add(new OccorrenzaCalendario(q, s.getId(), s.getNome(), dettaglio.trim(),
+					nomeIntermediario(s.getIdIntermediario()), s.isEnabled(), s.getCronExpression(),
+					s.getTimezone()));
+		}
+	}
+
 	private boolean cronValido(String cron) {
 		try {
 			org.springframework.scheduling.support.CronExpression.parse(cron);
 			return true;
-		} catch (Exception e) {
+		} catch (Exception _) {
 			return false;
 		}
 	}
@@ -149,7 +158,7 @@ public class SftpScheduleService {
 		applica(e, request);
 		e.setSftpPasswordEnc(credentialCipher.encrypt(request.sftpPassword()));
 		e.setEnabled(request.enabled() == null || request.enabled());
-		e.setDataCreazione(LocalDateTime.now());
+		e.setDataCreazione(LocalDateTime.now(ZoneId.systemDefault()));
 		e.setNextRunAt(prossimaEsecuzione(e));
 		// In fondo all'elenco: da li' chi l'ha creata la sposta dove serve.
 		Integer max = scheduleRepository.maxOrdine();
@@ -214,7 +223,7 @@ public class SftpScheduleService {
 	public void disable(Long id) {
 		SftpSchedule e = carica(id);
 		e.setEnabled(false);
-		e.setDataCessazione(LocalDateTime.now());
+		e.setDataCessazione(LocalDateTime.now(ZoneId.systemDefault()));
 		scheduleRepository.save(e);
 	}
 
@@ -223,7 +232,7 @@ public class SftpScheduleService {
 	@Transactional
 	public void delete(Long id) {
 		if (!scheduleRepository.existsById(id)) {
-			throw new RuntimeException("Schedulazione SFTP non trovata: " + id);
+			throw new BatchException(SCHEDULAZIONE_NON_TROVATA + ": " + id);
 		}
 		executionRepository.deleteBySftpScheduleId(id);
 		scheduleRepository.deleteById(id);
@@ -236,7 +245,7 @@ public class SftpScheduleService {
 	public it.be.batch.dto.Dtos.PaginaResponse<SftpExecutionResponse> findExecutions(Long scheduleId, int page,
 			int size) {
 		int p = Math.max(0, page - 1);
-		int s = Math.min(Math.max(1, size), 200);
+		int s = Math.clamp(size, 1, 200);
 		org.springframework.data.domain.Page<it.be.batch.entity.SftpExecution> pagina = executionRepository
 				.findBySftpScheduleIdOrderByStartedAtDesc(scheduleId,
 						org.springframework.data.domain.PageRequest.of(p, s));
@@ -267,7 +276,7 @@ public class SftpScheduleService {
 		if (!attivo) {
 			List<SftpExecution> orfane = executionRepository.findBySftpScheduleIdAndStatusAndEndedAtIsNull(scheduleId,
 					AppConstants.STATUS_PENDING);
-			LocalDateTime now = LocalDateTime.now();
+			LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
 			for (SftpExecution e : orfane) {
 				e.setStatus(SftpTransferService.STATUS_INTERROTTA);
 				e.setEndedAt(now);
@@ -288,10 +297,15 @@ public class SftpScheduleService {
 		out.put("success", true);
 		out.put("inEsecuzione", attivo);
 		out.put("esecuzioniChiuse", chiuse);
-		out.put("message", attivo
-				? "Interruzione richiesta: il trasferimento si ferma al termine del file in corso"
-				: (chiuse > 0 ? "Nessun trasferimento attivo: chiuse " + chiuse + " esecuzioni rimaste aperte"
-						: "Nessun trasferimento in corso da interrompere"));
+		String messaggio;
+		if (attivo) {
+			messaggio = "Interruzione richiesta: il trasferimento si ferma al termine del file in corso";
+		} else if (chiuse > 0) {
+			messaggio = "Nessun trasferimento attivo: chiuse " + chiuse + " esecuzioni rimaste aperte";
+		} else {
+			messaggio = "Nessun trasferimento in corso da interrompere";
+		}
+		out.put("message", messaggio);
 		return out;
 	}
 
@@ -301,42 +315,52 @@ public class SftpScheduleService {
 
 	private SftpSchedule carica(Long id) {
 		return scheduleRepository.findById(id)
-				.orElseThrow(() -> new RuntimeException("Schedulazione SFTP non trovata"));
+				.orElseThrow(() -> new BatchException(SCHEDULAZIONE_NON_TROVATA));
 	}
 
 	private void valida(SftpScheduleRequest r, boolean creazione) {
-		if (r.nome() == null || r.nome().isBlank()) {
-			throw new RuntimeException("Il nome della schedulazione è obbligatorio");
+		if (vuoto(r.nome())) {
+			throw new BatchException("Il nome della schedulazione è obbligatorio");
 		}
 		// L'intermediario NON e' obbligatorio: assente significa "vale per tutti", e in quel caso i file
 		// vanno nella cartella condivisa dello storage (intermediario 0), che il form propone da solo.
 		// Resta obbligatorio storageIntermediario, che e' il percorso vero e proprio.
 		if (!SftpSchedule.DIR_SFTP_TO_STORAGE.equals(r.direzione())
 				&& !SftpSchedule.DIR_STORAGE_TO_SFTP.equals(r.direzione())) {
-			throw new RuntimeException("Direzione non valida: " + r.direzione());
+			throw new BatchException("Direzione non valida: " + r.direzione());
 		}
-		if (r.sftpHost() == null || r.sftpHost().isBlank() || r.sftpUsername() == null || r.sftpUsername().isBlank()) {
-			throw new RuntimeException("Host e username SFTP sono obbligatori");
+		validaSftp(r, creazione);
+		if (vuoto(r.storageIntermediario()) || vuoto(r.storageType()) || vuoto(r.storageFolder())) {
+			throw new BatchException("Intermediario, tipo e cartella dello storage sono obbligatori");
 		}
-		if (creazione && (r.sftpPassword() == null || r.sftpPassword().isBlank())) {
-			throw new RuntimeException("La password SFTP è obbligatoria");
+		validaPolitica(r);
+	}
+
+	private void validaSftp(SftpScheduleRequest r, boolean creazione) {
+		if (vuoto(r.sftpHost()) || vuoto(r.sftpUsername())) {
+			throw new BatchException("Host e username SFTP sono obbligatori");
 		}
-		if (r.sftpPath() == null || r.sftpPath().isBlank()) {
-			throw new RuntimeException("Il percorso remoto è obbligatorio");
+		if (creazione && vuoto(r.sftpPassword())) {
+			throw new BatchException("La password SFTP è obbligatoria");
 		}
-		if (r.storageIntermediario() == null || r.storageIntermediario().isBlank() || r.storageType() == null
-				|| r.storageType().isBlank() || r.storageFolder() == null || r.storageFolder().isBlank()) {
-			throw new RuntimeException("Intermediario, tipo e cartella dello storage sono obbligatori");
+		if (vuoto(r.sftpPath())) {
+			throw new BatchException("Il percorso remoto è obbligatorio");
 		}
+	}
+
+	private void validaPolitica(SftpScheduleRequest r) {
 		String post = r.postTransfer();
-		if (post != null && !post.isBlank() && !SftpSchedule.POST_LASCIA.equals(post)
-				&& !SftpSchedule.POST_CANCELLA.equals(post) && !SftpSchedule.POST_SPOSTA.equals(post)) {
-			throw new RuntimeException("Politica post-trasferimento non valida: " + post);
+		if (!vuoto(post) && !SftpSchedule.POST_LASCIA.equals(post) && !SftpSchedule.POST_CANCELLA.equals(post)
+				&& !SftpSchedule.POST_SPOSTA.equals(post)) {
+			throw new BatchException("Politica post-trasferimento non valida: " + post);
 		}
-		if (SftpSchedule.POST_SPOSTA.equals(post)
-				&& (r.postTransferFolder() == null || r.postTransferFolder().isBlank())) {
-			throw new RuntimeException("Con la politica SPOSTA è obbligatoria la cartella di destinazione");
+		if (SftpSchedule.POST_SPOSTA.equals(post) && vuoto(r.postTransferFolder())) {
+			throw new BatchException("Con la politica SPOSTA è obbligatoria la cartella di destinazione");
 		}
+	}
+
+	private static boolean vuoto(String s) {
+		return s == null || s.isBlank();
 	}
 
 	private void applica(SftpSchedule e, SftpScheduleRequest r) {
@@ -375,8 +399,8 @@ public class SftpScheduleService {
 		}
 		try {
 			return LocalDateTime.parse(startAt);
-		} catch (Exception e) {
-			throw new RuntimeException("Data e ora di partenza non valide: " + startAt);
+		} catch (Exception _) {
+			throw new BatchException("Data e ora di partenza non valide: " + startAt);
 		}
 	}
 
@@ -412,7 +436,7 @@ public class SftpScheduleService {
 
 	private SftpExecutionResponse toExecutionResponse(SftpExecution e) {
 		Long durationMs = (e.getStartedAt() != null && e.getEndedAt() != null)
-				? Duration.between(e.getStartedAt(), e.getEndedAt()).toMillis()
+				? DateUtils.durataFra(e.getStartedAt(), e.getEndedAt()).toMillis()
 				: null;
 		return new SftpExecutionResponse(e.getId(), e.getStatus(), e.getStartedAt(), e.getEndedAt(), durationMs,
 				e.getFileTrasferiti(), e.getByteTrasferiti(), e.getErrorMessage(), e.getLog());

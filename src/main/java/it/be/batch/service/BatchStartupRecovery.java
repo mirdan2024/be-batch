@@ -1,6 +1,7 @@
 package it.be.batch.service;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,7 +35,7 @@ public class BatchStartupRecovery {
 	@Transactional
 	public void recoverStaleExecutions() {
 		int n = executionRepository.closeStaleExecutions(AppConstants.STATUS_PENDING, AppConstants.STATUS_FAILED,
-				LocalDateTime.now(), "Esecuzione interrotta dal riavvio dell'applicazione (mai conclusa)");
+				LocalDateTime.now(ZoneId.systemDefault()), "Esecuzione interrotta dal riavvio dell'applicazione (mai conclusa)");
 		if (n > 0) {
 			logger.warn("Recupero all'avvio: {} esecuzioni rimaste PENDING senza conclusione marcate FAILED", n);
 		}

@@ -1,6 +1,7 @@
 package it.be.batch.service;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Map;
 
 import org.springframework.http.HttpEntity;
@@ -58,14 +59,6 @@ public class BatchExecutor {
 		this.chainService = chainService;
 	}
 
-	/** Taglia i testi lunghi per i log (il body completo va comunque su batch_execution.response_body). */
-	private static String abbrevia(String s, int max) {
-		if (s == null) {
-			return null;
-		}
-		return s.length() <= max ? s : s.substring(0, max) + "... (" + s.length() + " caratteri)";
-	}
-
 	public void execute(BatchSubscription subscription, String jwt) {
 		esegui(subscription, jwt, null, null);
 	}
@@ -90,82 +83,23 @@ public class BatchExecutor {
 		// 1) Transazione breve: registra l'esecuzione come "in corso" (PENDING). Diventerà COMPLETED o
 		// FAILED al termine della chiamata (passo 3). Se l'app viene riavviata mentre è ancora PENDING,
 		// il recupero all'avvio (BatchStartupRecovery) la marca FAILED: una PENDING non conclusa è orfana.
-		BatchExecution execution = transactionTemplate.execute(status -> {
-			BatchExecution e = new BatchExecution();
-			e.setBatchSubscription(subscription);
-			e.setStatus(AppConstants.STATUS_PENDING);
-			e.setStartedAt(LocalDateTime.now());
-			// Primo battito: da qui in poi lo aggiorna ogni riga di telecronaca. Serve a far partire il
-			// conteggio del silenzio dall'avvio anche per i servizi che non scrivono nulla.
-			e.setUltimoAggiornamento(LocalDateTime.now());
-			if (ripresa) {
-				e.setIdRipresaDi(idDaRiprendere);
-				// Prima riga della telecronaca: chi apre lo storico vede subito che non e' un avvio da capo.
-				e.setLog(LocalDateTime.now().format(FORMATO_LOG) + "  Ripresa dell'esecuzione #" + idDaRiprendere
-						+ ((idOriginale != null && !idOriginale.equals(idDaRiprendere))
-								? " (lavoro avviato dall'esecuzione #" + idOriginale + ")"
-								: ""));
-			}
-			return executionRepository.save(e);
-		});
+		BatchExecution execution = transactionTemplate
+				.execute(status -> registraAvvio(subscription, idDaRiprendere, idOriginale));
 
 		// 2) FUORI transazione: chiamata all'endpoint del batch.
-		String status;
-		Integer responseCode = null;
-		String responseBody = null;
-		String errorMessage = null;
-		// 202 ACCEPTED = "preso in carico, ti aggiorno io": il servizio elabora in background, scrive
-		// l'avanzamento su /batch-executions/{id}/log e chiude l'esecuzione con /finish. In quel caso
-		// be-batch NON tocca lo stato (resta PENDING) e soprattutto non resta appeso ad aspettare:
-		// su elaborazioni lunghe il read timeout marcava FAILED un servizio che stava lavorando bene.
-		boolean presoInCarico = false;
-		try {
-			ResponseEntity<String> response = callRestBatch(execution, subscription, jwt, ripresa, idOriginale);
-			if (response.getStatusCode().value() == 202) {
-				presoInCarico = true;
-				logger.info("Batch subscription {}: preso in carico dal servizio (202), esito atteso via callback",
-						subscription.getId());
-			}
-			// Il RestTemplate lancia eccezione sui 4xx/5xx (finiscono nel catch), quindi qui la risposta è
-			// sempre 2xx: l'esecuzione è conclusa con successo -> COMPLETED (non PENDING, che era un bug).
-			status = AppConstants.STATUS_COMPLETED;
-			responseCode = response.getStatusCode().value();
-			responseBody = response.getBody();
-		} catch (org.springframework.web.client.RestClientResponseException ex) {
-			// Il servizio ha risposto con un errore (4xx/5xx): il MOTIVO sta nel body, che spesso contiene
-			// il dettaglio per-file/per-record. Senza salvarlo, nello storico resterebbe solo "500 Internal
-			// Server Error" e non ci sarebbe modo di capire cosa correggere.
-			status = AppConstants.STATUS_FAILED;
-			responseCode = ex.getStatusCode().value();
-			responseBody = ex.getResponseBodyAsString();
-			errorMessage = ex.getStatusCode().value() + " " + ex.getStatusText();
-			logger.error("Batch subscription {}: chiamata fallita con status {} - body: {}", subscription.getId(),
-					responseCode, abbrevia(responseBody, 2000));
-		} catch (Exception ex) {
-			// Errore senza risposta HTTP (timeout, host irraggiungibile, ecc.): si salva il tipo oltre al
-			// messaggio, perche' getMessage() da solo puo' essere null (es. NullPointerException).
-			status = AppConstants.STATUS_FAILED;
-			errorMessage = ex.getClass().getSimpleName()
-					+ (ex.getMessage() != null ? ": " + ex.getMessage() : "");
-			logger.error("Batch subscription {}: esecuzione fallita: {}", subscription.getId(), errorMessage, ex);
-		}
+		final Esito esito = chiamaServizio(execution, subscription, jwt, ripresa, idOriginale);
 
 		// 3) Transazione breve: salva l'esito e riprogramma la sottoscrizione (atomici insieme).
-		final String fStatus = status;
-		final Integer fResponseCode = responseCode;
-		final String fResponseBody = responseBody;
-		final String fErrorMessage = errorMessage;
-		final boolean fPresoInCarico = presoInCarico;
 		transactionTemplate.executeWithoutResult(txStatus -> {
-			LocalDateTime now = LocalDateTime.now();
+			LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
 			// Con 202 l'esecuzione resta PENDING: la chiudera' il servizio. Si aggiorna solo la
 			// riprogrammazione della sottoscrizione, che non dipende dall'esito.
 			// Scritture MIRATE, non save(execution): quell'oggetto e' la copia letta all'avvio, e intanto il
 			// servizio ha gia' scritto telecronaca (e magari chiuso l'esecuzione). Risalvarlo per intero
 			// cancellava la telecronaca e ne riportava lo stato indietro.
-			if (!fPresoInCarico) {
-				executionRepository.registraEsito(execution.getId(), fResponseCode, fResponseBody, fStatus,
-						fErrorMessage, now);
+			if (!esito.presoInCarico()) {
+				executionRepository.registraEsito(execution.getId(), esito.responseCode(), esito.responseBody(),
+						esito.status(), esito.errorMessage(), now);
 			} else {
 				executionRepository.registraCodice(execution.getId(), 202);
 			}
@@ -179,14 +113,80 @@ public class BatchExecutor {
 		// chiuderà il servizio chiamando /batch-execution/{id}/finish — è li' che scatta la catena
 		// (BatchExecutionService.finish). Lanciare qui il seguito significherebbe farlo partire mentre il
 		// lavoro precedente sta ancora elaborando.
-		if (!presoInCarico) {
+		if (!esito.presoInCarico()) {
 			try {
-				chainService.esecuzioneConclusa(subscription, status);
+				chainService.esecuzioneConclusa(subscription, esito.status());
 			} catch (Exception e) {
 				// Il seguito e' un servizio in piu': se non parte, l'esecuzione appena conclusa resta
 				// valida e il suo esito registrato.
 				logger.error("Catena non avviata dopo la subscription {}: {}", subscription.getId(), e.getMessage(), e);
 			}
+		}
+	}
+
+	/** Passo 1: la riga di batch_execution "in corso", con la prima riga di telecronaca se e' una ripresa. */
+	private BatchExecution registraAvvio(BatchSubscription subscription, Long idDaRiprendere, Long idOriginale) {
+		BatchExecution e = new BatchExecution();
+		e.setBatchSubscription(subscription);
+		e.setStatus(AppConstants.STATUS_PENDING);
+		e.setStartedAt(LocalDateTime.now(ZoneId.systemDefault()));
+		// Primo battito: da qui in poi lo aggiorna ogni riga di telecronaca. Serve a far partire il
+		// conteggio del silenzio dall'avvio anche per i servizi che non scrivono nulla.
+		e.setUltimoAggiornamento(LocalDateTime.now(ZoneId.systemDefault()));
+		if (idDaRiprendere != null) {
+			e.setIdRipresaDi(idDaRiprendere);
+			// Prima riga della telecronaca: chi apre lo storico vede subito che non e' un avvio da capo.
+			e.setLog(LocalDateTime.now(ZoneId.systemDefault()).format(FORMATO_LOG) + "  Ripresa dell'esecuzione #" + idDaRiprendere
+					+ ((idOriginale != null && !idOriginale.equals(idDaRiprendere))
+							? " (lavoro avviato dall'esecuzione #" + idOriginale + ")"
+							: ""));
+		}
+		return executionRepository.save(e);
+	}
+
+	/** Esito della chiamata al servizio, cosi' come va registrato su batch_execution. */
+	private record Esito(String status, Integer responseCode, String responseBody, String errorMessage,
+			boolean presoInCarico) {
+	}
+
+	/** Passo 2, FUORI transazione: la chiamata all'endpoint del batch. Non solleva: l'errore e' un esito. */
+	private Esito chiamaServizio(BatchExecution execution, BatchSubscription subscription, String jwt,
+			boolean ripresa, Long idOriginale) {
+		try {
+			ResponseEntity<String> response = callRestBatch(execution, subscription, jwt, ripresa, idOriginale);
+			// 202 ACCEPTED = "preso in carico, ti aggiorno io": il servizio elabora in background, scrive
+			// l'avanzamento su /batch-executions/{id}/log e chiude l'esecuzione con /finish. In quel caso
+			// be-batch NON tocca lo stato (resta PENDING) e soprattutto non resta appeso ad aspettare:
+			// su elaborazioni lunghe il read timeout marcava FAILED un servizio che stava lavorando bene.
+			boolean presoInCarico = response.getStatusCode().value() == 202;
+			if (presoInCarico) {
+				logger.info("Batch subscription {}: preso in carico dal servizio (202), esito atteso via callback",
+						subscription.getId());
+			}
+			// Il RestTemplate lancia eccezione sui 4xx/5xx (finiscono nel catch), quindi qui la risposta è
+			// sempre 2xx: l'esecuzione è conclusa con successo -> COMPLETED (non PENDING, che era un bug).
+			return new Esito(AppConstants.STATUS_COMPLETED, response.getStatusCode().value(), response.getBody(),
+					null, presoInCarico);
+		} catch (org.springframework.web.client.RestClientResponseException ex) {
+			// Il servizio ha risposto con un errore (4xx/5xx): il MOTIVO sta nel body, che spesso contiene
+			// il dettaglio per-file/per-record. Senza salvarlo, nello storico resterebbe solo "500 Internal
+			// Server Error" e non ci sarebbe modo di capire cosa correggere.
+			Integer responseCode = ex.getStatusCode().value();
+			String responseBody = ex.getResponseBodyAsString();
+			// Nel log va lo stato. Il corpo, col suo dettaglio per-file e per-record, sta nello storico
+			// dell'esecuzione (batch_execution.response_body), che e' dove lo si va a leggere: fino al 02-10-2026
+			// i suoi primi 2000 caratteri finivano anche qui.
+			logger.error("Batch subscription {}: chiamata fallita con status {} (il corpo e' nello storico"
+					+ " dell'esecuzione)", subscription.getId(), responseCode);
+			return new Esito(AppConstants.STATUS_FAILED, responseCode, responseBody,
+					ex.getStatusCode().value() + " " + ex.getStatusText(), false);
+		} catch (Exception ex) {
+			// Errore senza risposta HTTP (timeout, host irraggiungibile, ecc.): si salva il tipo oltre al
+			// messaggio, perche' getMessage() da solo puo' essere null (es. NullPointerException).
+			String errorMessage = ex.getClass().getSimpleName()
+					+ (ex.getMessage() != null ? ": " + ex.getMessage() : "");
+			logger.error("Batch subscription {}: esecuzione fallita: {}", subscription.getId(), errorMessage, ex);
+			return new Esito(AppConstants.STATUS_FAILED, null, null, errorMessage, false);
 		}
 	}
 

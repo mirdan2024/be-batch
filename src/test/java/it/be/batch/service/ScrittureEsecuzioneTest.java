@@ -111,7 +111,8 @@ class ScrittureEsecuzioneTest {
 		verify(esecuzioni).aggiornaEsito(7L, "ok", "COMPLETED", 200);
 		verify(esecuzioni, never()).save(any());
 
-		assertThrows(RuntimeException.class, () -> servizio.update(8L, new BatchExecutionRequest(8L, "COMPLETED", "ok", 200)));
+		BatchExecutionRequest inesistente = new BatchExecutionRequest(8L, "COMPLETED", "ok", 200);
+		assertThrows(RuntimeException.class, () -> servizio.update(8L, inesistente));
 	}
 
 	/** Esecutore con una schedulazione minima e la risposta HTTP indicata. */
@@ -119,6 +120,11 @@ class ScrittureEsecuzioneTest {
 		RestTemplate rest = mock(RestTemplate.class);
 		when(rest.exchange(anyString(), any(HttpMethod.class), any(HttpEntity.class), eq(String.class)))
 				.thenReturn(risposta);
+		return esecutore(rest);
+	}
+
+	/** Esecutore con il RestTemplate indicato (per le chiamate che falliscono). */
+	private BatchExecutor esecutore(RestTemplate rest) {
 		when(esecuzioni.save(any(BatchExecution.class))).thenAnswer(i -> {
 			BatchExecution e = i.getArgument(0);
 			e.setId(500L);
@@ -160,5 +166,33 @@ class ScrittureEsecuzioneTest {
 		verify(esecuzioni, times(1)).save(any(BatchExecution.class));
 		verify(catena).esecuzioneConclusa(any(BatchSubscription.class), eq("COMPLETED"));
 		assertEquals(1, org.mockito.Mockito.mockingDetails(catena).getInvocations().size());
+	}
+
+	@Test
+	@DisplayName("Errore HTTP del servizio: FAILED con codice, corpo e 'codice testo' come messaggio")
+	void erroreHttp() {
+		RestTemplate rest = mock(RestTemplate.class);
+		when(rest.exchange(anyString(), any(HttpMethod.class), any(HttpEntity.class), eq(String.class)))
+				.thenThrow(org.springframework.web.client.HttpServerErrorException.create(
+						HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error", null, "file 3 illeggibile".getBytes(),
+						null));
+		esecutore(rest).execute(schedulazione(), "jwt");
+
+		verify(esecuzioni).registraEsito(eq(500L), eq(500), eq("file 3 illeggibile"), eq("FAILED"),
+				eq("500 Internal Server Error"), any(LocalDateTime.class));
+		verify(catena).esecuzioneConclusa(any(BatchSubscription.class), eq("FAILED"));
+	}
+
+	@Test
+	@DisplayName("Errore senza risposta: FAILED, niente codice ne' corpo, messaggio 'Tipo: testo'")
+	void erroreSenzaRisposta() {
+		RestTemplate rest = mock(RestTemplate.class);
+		when(rest.exchange(anyString(), any(HttpMethod.class), any(HttpEntity.class), eq(String.class)))
+				.thenThrow(new org.springframework.web.client.ResourceAccessException("Read timed out"));
+		esecutore(rest).execute(schedulazione(), "jwt");
+
+		verify(esecuzioni).registraEsito(eq(500L), isNull(), isNull(), eq("FAILED"),
+				eq("ResourceAccessException: Read timed out"), any(LocalDateTime.class));
+		verify(catena).esecuzioneConclusa(any(BatchSubscription.class), eq("FAILED"));
 	}
 }

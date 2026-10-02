@@ -1,6 +1,7 @@
 package it.be.batch.service;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -57,7 +58,7 @@ public class SftpScheduler {
 
 	@Scheduled(fixedDelayString = "${sftp.scheduler.fixed-delay-ms:30000}")
 	public void dispatch() {
-		LocalDateTime now = LocalDateTime.now();
+		LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
 		List<SftpSchedule> scadute = scheduleRepository.findByEnabledTrueAndNextRunAtLessThanEqual(now);
 		for (SftpSchedule s : scadute) {
 			if (s.getDataCessazione() != null) {
@@ -73,9 +74,9 @@ public class SftpScheduler {
 	 */
 	@Scheduled(fixedDelayString = "${sftp.execution.stale-check-ms:600000}")
 	public void chiudiEsecuzioniPiantate() {
-		LocalDateTime limite = LocalDateTime.now().minusHours(staleTimeoutHours);
+		LocalDateTime limite = LocalDateTime.now(ZoneId.systemDefault()).minusHours(staleTimeoutHours);
 		int chiuse = executionRepository.closeStalePending(AppConstants.STATUS_PENDING, AppConstants.STATUS_FAILED,
-				LocalDateTime.now(), limite, "Nessun aggiornamento da oltre " + staleTimeoutHours
+				LocalDateTime.now(ZoneId.systemDefault()), limite, "Nessun aggiornamento da oltre " + staleTimeoutHours
 						+ " ore: esecuzione chiusa d'ufficio (probabile riavvio del servizio).");
 		if (chiuse > 0) {
 			logger.warn("Chiuse {} esecuzioni SFTP rimaste PENDING oltre {} ore", chiuse, staleTimeoutHours);

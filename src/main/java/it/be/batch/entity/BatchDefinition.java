@@ -1,9 +1,7 @@
 package it.be.batch.entity;
 
-import java.sql.Timestamp;
 import java.time.LocalDateTime;
 
-import it.ai.client.constants.AppConstants;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -35,13 +33,13 @@ public class BatchDefinition {
 	private String endpointUrl;
 
 	// Template del body JSON di default del servizio, catturato all'auto-registrazione
-	// (RestServiceRegistryService). Nullable: un GET non ha body, e la creazione manuale non lo richiede;
+	// (RestServiceRegistryService). Nullable: un GET non ha body, e la creazione manuale non lo richiede,
 	// la sottoscrizione può comunque fornire il proprio bodyJson, che è quello effettivamente inviato.
 	@Column(name = "body_json", columnDefinition = "TEXT")
 	private String bodyJson;
 
 	// URL di INTERRUZIONE del servizio chiamato (facoltativo). Un processo remoto non si puo' uccidere
-	// da fuori: se il servizio supporta la cancellazione cooperativa espone uno "stop" e lo dichiara qui;
+	// da fuori: se il servizio supporta la cancellazione cooperativa espone uno "stop" e lo dichiara qui:
 	// be-batch lo chiama quando l'operatore interrompe l'elaborazione. NULL = non interrompibile a valle.
 	@Column(name = "stop_url")
 	private String stopUrl;
@@ -102,6 +100,7 @@ public class BatchDefinition {
 	private boolean enabled = true;
 
 	public BatchDefinition() {
+		// Costruttore senza argomenti richiesto da JPA.
 	}
 
 

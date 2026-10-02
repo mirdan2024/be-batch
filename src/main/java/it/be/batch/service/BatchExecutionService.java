@@ -33,10 +33,18 @@ public class BatchExecutionService {
 	 */
 	@org.springframework.transaction.annotation.Transactional
 	public void appendLog(Long id, String message) {
+		aggiungiRigaLog(id, message);
+	}
+
+	/**
+	 * Il corpo di {@link #appendLog}, senza passare dal proxy: {@link #finish} lo chiama dall'interno,
+	 * gia' nella propria transazione (appendLog e' REQUIRED, quindi ci si univa comunque a quella).
+	 */
+	private void aggiungiRigaLog(Long id, String message) {
 		if (message == null || message.isBlank()) {
 			return;
 		}
-		java.time.LocalDateTime adesso = java.time.LocalDateTime.now();
+		java.time.LocalDateTime adesso = java.time.LocalDateTime.now(java.time.ZoneId.systemDefault());
 		String riga = adesso.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")) + "  "
 				+ message;
 		// Battito del servizio: e' su questo che la rete di sicurezza decide se l'esecuzione e' morta.
@@ -53,14 +61,14 @@ public class BatchExecutionService {
 	public void finish(Long id, String status, String message, String responseBody) {
 		final String statoFinale = (status == null || status.isBlank()) ? "COMPLETED" : status.trim().toUpperCase();
 		// Solo stato, fine, messaggio e corpo: il codice HTTP e la telecronaca non si toccano.
-		repository.chiudi(id, statoFinale, java.time.LocalDateTime.now(),
+		repository.chiudi(id, statoFinale, java.time.LocalDateTime.now(java.time.ZoneId.systemDefault()),
 				(message != null && !message.isBlank()) ? message : null,
 				(responseBody != null && !responseBody.isBlank()) ? responseBody : null);
 		// Letta DENTRO la transazione: la relazione e' LAZY e fuori non sarebbe piu' raggiungibile.
 		it.be.batch.entity.BatchSubscription subscription = repository.findById(id)
 				.map(BatchExecution::getBatchSubscription).orElse(null);
 
-		appendLog(id, "Esecuzione chiusa dal servizio con stato " + status
+		aggiungiRigaLog(id, "Esecuzione chiusa dal servizio con stato " + status
 				+ (message != null && !message.isBlank() ? " - " + message : ""));
 
 		// Concatenamento: e' questo il momento in cui il lavoro e' davvero finito (i servizi lunghi
@@ -78,7 +86,7 @@ public class BatchExecutionService {
 	public void update(Long id, BatchExecutionRequest request) {
 		// Stesse colonne di prima, senza risalvare la riga intera (telecronaca compresa).
 		if (repository.aggiornaEsito(id, request.response(), request.status(), request.response_code()) == 0) {
-			throw new RuntimeException("Esecuzione batch non trovata: " + id);
+			throw new BatchException("Esecuzione batch non trovata: " + id);
 		}
 	}
 
